@@ -4091,7 +4091,11 @@ const REFUSAL_ANSWER = new RegExp(
     + "|\\bi (?:won'?t|will not) produce\\b|\\bdeclining (?:it|that|this)\\b"
     + '|\\bif you want that,? say go\\b'
     + "|\\bi(?:'m| am) sorry,? (?:but|i)"
-    + "|\\bi can'?t help with (?:that|this)\\b|\\bnot something i (?:can|will) (?:help|do)"
+    + "|\\bi(?: ?can(?:'t|not)|'m unable to|'m not able to| ?won'?t| ?will not| ?am unable to) "
+    + '(?:continue|proceed|comply|finish|complete|go (?:on|further|there))\\b'
+    + "|\\bi (?:can(?:'t|not)|won'?t) (?:write|build|produce|provide) (?:this|that|it|the|a|your)\\b"
+    + "|\\bi can(?:'t|not) (?:help|assist) (?:you|with (?:that|this|it|your request|the request))\\b"
+    + "|\\bnot something i (?:can|will) (?:help|do)"
     + "|\\bnot (?:able|allowed|permitted) to (?:assist|help|provide|share)"
     + '|\\b(?:falls|is) outside (?:of )?(?:what|my|the scope)\\b'
     + '|\\b(?:outside|beyond) my (?:scope|guidelines|comfort)\\b'

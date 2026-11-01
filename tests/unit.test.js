@@ -266,7 +266,7 @@ test('Containerfile keeps the rootless Podman runtime minimal and fail-closed', 
   assert.deepEqual(copyLines, [
     'COPY --chown=1000:1000 package.json server.js ./',
     // server.js requires lib/updater.js; the image still has no .git, so it reports updates as unavailable.
-    'COPY --chown=1000:1000 lib/auth-health.js lib/pow.js lib/updater.js ./lib/',
+    'COPY --chown=1000:1000 lib/auth-health.js lib/auth-refresh.js lib/pow.js lib/updater.js ./lib/',
     'COPY --chown=1000:1000 scripts/lib/tui-menu.js ./scripts/lib/tui-menu.js',
     'COPY --chown=1000:1000 public/dashboard/index.html public/dashboard/*.css public/dashboard/*.js public/dashboard/*.png public/dashboard/*.jpg public/dashboard/*.woff2 public/dashboard/GEIST-LICENSE.txt ./public/dashboard/',
   ]);
@@ -1070,6 +1070,35 @@ test('one oversized turn keeps its head and tail, and its cut middle is reported
   assert.match(built.prompt, /^sys/);
   assert.match(built.prompt, /GOAL: refactor auth/, 'the summary sits where the cut content was');
   assert.match(built.prompt, /FINAL-REQUEST: reply with just OK\.$/, 'the live end of the turn survives');
+});
+
+test('a new conversation recalls only relevant earlier work, and nothing else', (t) => {
+  const mk = (id, summary) => {
+    const s = serverInternals.createSession();
+    s.summary = summary;
+    s.lastActivityAt = Date.now();
+    serverInternals.sessions.set(id, s);
+    return s;
+  };
+  mk('old-auth-work', 'GOAL: fix auth-health.js token probe. OPEN: rerun ratelimit_check.');
+  mk('old-rust-work', 'GOAL: rewrite the rayon thread pool in crawl.rs. OPEN: bench it.');
+  t.after(() => { serverInternals.sessions.delete('old-auth-work'); serverInternals.sessions.delete('old-rust-work'); });
+
+  const fresh = serverInternals.createSession();
+  const matched = serverInternals.recallBlock(fresh, [{ role: 'user', content: 'continue the auth-health.js token probe' }]);
+  assert.match(matched, /From earlier conversations on this machine/);
+  assert.match(matched, /auth-health\.js/);
+  assert.doesNotMatch(matched, /rayon/);
+
+  // Unrelated work is not forced in.
+  const unrelated = serverInternals.recallBlock(fresh, [{ role: 'user', content: 'write a haiku about the sea' }]);
+  assert.equal(unrelated, '');
+
+  // An established conversation never gets a recall block: it has its own memory.
+  const busy = serverInternals.createSession();
+  busy.id = 'live-chat';
+  busy.history.push({ user: 'a', assistant: 'b' });
+  assert.equal(serverInternals.recallBlock(busy, [{ role: 'user', content: 'auth-health.js token probe' }]), '');
 });
 
 test('a compaction summary is cumulative memory: persisted, then cleared when the transcript is replaced', (t) => {

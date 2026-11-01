@@ -3474,6 +3474,61 @@ function middleWithBlock(text, block, maxChars, headRatio = 0.4) {
     return `${value.slice(0, headChars)}${PROMPT_COMPACTION_MARKER}${block}${value.slice(value.length - tailChars)}`;
 }
 
+// ─── Recall across conversations ────────────────────────────────────────────
+// Every new conversation starts a new upstream chat, so without this an agent that
+// reconnects after a restart knows nothing about the work done ten minutes earlier.
+// Only summaries are searched, only when the conversation is genuinely new, and only
+// when the words actually overlap — a Python session is not handed the Rust one.
+const RECALL_ENABLED = !/^(0|false|no|off)$/i.test(String(process.env.DEEPSEEK_RECALL || '1'));
+const RECALL_MAX_CHARS = Math.max(200, Math.min(4000, Number(process.env.DEEPSEEK_RECALL_MAX_CHARS) || 1200));
+const RECALL_MIN_OVERLAP = 2;
+const RECALL_STOPWORDS = new Set(['the', 'and', 'for', 'with', 'that', 'this', 'from', 'have', 'wire', 'into', 'your', 'about', 'just', 'like', 'make', 'need', 'please', 'again', 'still', 'then', 'than', 'them', 'they', 'what', 'when', 'will', 'want', 'does', 'done', 'file', 'files', 'code', 'test', 'tests', 'user', 'assistant', 'step', 'reply']);
+
+function recallTokens(text) {
+    const found = String(text || '').toLowerCase().match(/[a-z0-9_./-]{4,}/g) || [];
+    return new Set(found.filter(token => !RECALL_STOPWORDS.has(token)));
+}
+
+// A conversation is new when nothing local has happened in it yet.
+function isFreshConversation(session) {
+    return Boolean(session)
+        && !session.id
+        && !String(session.summary || '').trim()
+        && !String(session.compactionSummary || '').trim()
+        && Array.isArray(session.history) && session.history.length === 0;
+}
+
+function recallBlock(session, messages, selfAgentId = '') {
+    if (!RECALL_ENABLED || !isFreshConversation(session)) return '';
+    const firstUser = (messages || []).find(msg => msg && msg.role === 'user' && !isReplayedAgentSystem(normalizeMessageContent(msg.content)));
+    const wanted = recallTokens(normalizeMessageContent(firstUser?.content).slice(0, 4000));
+    if (wanted.size === 0) return '';
+
+    const ranked = [];
+    for (const [id, other] of sessions) {
+        if (!other || id === selfAgentId) continue;
+        const text = [other.summary, other.compactionSummary].filter(Boolean).join('\n');
+        if (!text) continue;
+        const have = recallTokens(text);
+        let overlap = 0;
+        for (const token of wanted) if (have.has(token)) overlap++;
+        if (overlap >= RECALL_MIN_OVERLAP) ranked.push({ text, overlap, at: other.lastActivityAt || 0 });
+    }
+    if (!ranked.length) return '';
+    // Most relevant first, newest breaks a tie.
+    ranked.sort((a, b) => (b.overlap - a.overlap) || (b.at - a.at));
+    const chosen = [];
+    let used = 0;
+    for (const entry of ranked) {
+        if (chosen.length >= 2 || used >= RECALL_MAX_CHARS) break;
+        const piece = truncatePromptMiddle(entry.text, Math.min(600, RECALL_MAX_CHARS - used), 0.6);
+        chosen.push(piece);
+        used += piece.length;
+    }
+    if (!chosen.length) return '';
+    return `[From earlier conversations on this machine]\n${chosen.join('\n---\n')}\n[End of recall]\n\n`;
+}
+
 function summaryBlock(summary) {
     const text = String(summary || '').trim();
     if (!text) return '';
@@ -5617,7 +5672,11 @@ const server = http.createServer(async (req, res) => {
                     [session.summary, session.compactionSummary].filter(Boolean).join('\n'),
                 );
             const resolved = resolveUpstreamPrompt(session, messages, tools, recoveryHistoryPrefix, promptOptions);
-            const historyPrefix = resolved.historyPrefix;
+            // A brand-new conversation gets a short, relevance-filtered recall of what this
+            // machine already worked on, in place of the empty recovery prefix.
+            const recall = resolved.historyPrefix ? '' : recallBlock(session, messages, agentId);
+            if (recall) console.log(`${agentTag} Recalled ${recall.length} chars of related earlier work.`);
+            const historyPrefix = resolved.historyPrefix || recall;
 
             // Whatever earlier trims already cut out of this upstream chat stays in the prompt
             // as one block, even if this request drops nothing new.
@@ -5835,7 +5894,7 @@ const server = http.createServer(async (req, res) => {
                                 console.log(`${agentTag} account ${failedAccountId} rejected its token; attempting a refresh.`);
                                 let refreshed = null;
                                 try {
-                                    refreshed = await authRefresh.refreshAccount(target);
+                                    refreshed = await authRefresh.refreshAccount(target, { force: true });
                                 } catch (refreshError) {
                                     refreshed = { ok: false, reason: refreshError?.message || 'refresh_error' };
                                 }
@@ -6705,6 +6764,8 @@ module.exports = {
         splitConversationBudget,
         summaryBlock,
         summaryInstruction,
+        recallBlock,
+        recallTokens,
         sanitizeSummary,
         summaryCacheKey,
         summaryStats,

@@ -681,6 +681,7 @@ const ACCOUNT_VIEW_KEYS = [
   'busy', 'busy_agent', 'busy_since', 'cooldown_reason', 'cooldown_remaining_sec', 'cooldown_until',
   'credentials', 'disabled_by', 'email', 'enabled', 'failures', 'id', 'last_error', 'last_success_at',
   'last_used_at', 'name', 'status', 'total_failures', 'usage',
+  'invalid', 'last_probe', 'probe_latency_ms', 'token_state',
 ].sort();
 
 test('GET /admin/accounts reports every account state without leaking credentials or file paths', async (t) => {

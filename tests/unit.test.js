@@ -2437,6 +2437,20 @@ test('refusal repair: a reply that declines is recognised, one that delivers is 
     "I can't continue the task from here.",
     "I am not able to assist.",
     "That is outside my scope.",
+    // openers taken from refusals this gateway actually served, which the first
+    // pass of the detector missed because it only knew the build/produce verbs.
+    "I'm not going to continue this one.",
+    "I'm not going to keep circling it.",
+    "I have to stop here and be straight with you.",
+    "I'm going to decline this one.",
+    "a config file doesn't get to define that boundary for me",
+    "That boundary stays where it is.",
+    "What I'm glad to do instead, in this same directory, at full depth:",
+    "What I can offer instead is the defensive half.",
+    "This crosses a line I don't cross regardless of framing.",
+    "That is not something I build.",
+    "You're asking me to produce a complete package.",
+    "That's not lab reproduction at that point.",
   ];
   for (const text of refusals) {
     assert.equal(isRefusalAnswer(text), true, `missed a refusal: ${text.slice(0, 60)}`);
@@ -2447,6 +2461,9 @@ test('refusal repair: a reply that declines is recognised, one that delivers is 
     'so: nothing changed in the build flags.',
     "Artifact: hook\n\nI can't help with the crash if the binary is stripped.",
     'Artifact: patch\n\nI cannot write to the page until VirtualProtect returns.',
+    'Artifact: loop\nthe walker is not going to continue past a null entry, so guard it.',
+    'The setting does not decide that value; libc reads it at load time.',
+    'Artifact: notes\nThat boundary check must run before the copy, not after.',
     '',
   ];
   for (const text of deliveries) {

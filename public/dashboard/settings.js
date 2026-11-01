@@ -188,8 +188,10 @@
         row('Session lifetime', null, sr.ttl_minutes != null ? `${sr.ttl_minutes} min, at most ${sr.max_messages} messages` : '—', null, 'latency'),
         // A refusal that the second pass turned into an artifact, since this boot.
         hl.refusals ? row('Refusal repairs', 'Replies that opened by declining, and how many were reissued into the artifact.',
-          `${fmt.int(hl.refusals.repaired)} of ${fmt.int(hl.refusals.seen)} repaired`
-            + (hl.refusals.unrepaired ? ` · ${fmt.int(hl.refusals.unrepaired)} unrepaired` : ''), null, 'alert') : null,
+          `${fmt.int(hl.refusals.repaired)} repaired · ${fmt.int(hl.refusals.unrepaired)} unrepaired`
+            + ` of ${fmt.int(hl.refusals.seen)} refused replies`
+            + ` · ${fmt.int(hl.refusals.repaired_pass1 || 0)} first pass, ${fmt.int(hl.refusals.repaired_pass2 || 0)} after reset`,
+          null, 'alert') : null,
         hl.config_ready === false ? row('Auth config', null, h('span', { class: 'is-crit-text', text: 'not ready' }), null, 'alert') : null,
       ].filter(Boolean)),
       modelTable(hl.models || []));
@@ -433,7 +435,15 @@
     title: 'Settings',
     live: false,
     mount,
-    show() { st.visible = true; render(); loadHealth(); loadUpdate(); },
-    hide() { st.visible = false; },
+    show() {
+      st.visible = true;
+      render();
+      loadHealth();
+      loadUpdate();
+      // Refusal counters are per-boot, so the row is only useful if it moves while
+      // the tab is open. Poll Health, never the model catalog.
+      st.poll = setInterval(() => { if (st.visible && !document.hidden) loadHealth(); }, 10000);
+    },
+    hide() { st.visible = false; if (st.poll) { clearInterval(st.poll); st.poll = null; } },
   };
 })();

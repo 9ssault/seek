@@ -1,0 +1,418 @@
+:root {
+  color-scheme: light dark;
+  --page: #f6f7fb;
+  --surface: #ffffff;
+  --surface-soft: #edf0f8;
+  --text: #171a24;
+  --muted: #72798b;
+  --line: #e5e8f0;
+  --accent: #4d6bfe;
+  --accent-hover: #3f5deb;
+  --accent-soft: #e8edff;
+  --success: #168b59;
+  --success-soft: #e6f6ee;
+  --warning: #a96500;
+  --warning-soft: #fff2d8;
+  --error: #c63c46;
+  --error-soft: #ffebed;
+  font-family: "Avenir Next", Avenir, "Trebuchet MS", sans-serif;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --page: #151720;
+    --surface: #1e212c;
+    --surface-soft: #272b38;
+    --text: #f7f8fc;
+    --muted: #989fb0;
+    --line: #303544;
+    --accent: #6e86ff;
+    --accent-hover: #7d92ff;
+    --accent-soft: #292f4b;
+    --success: #62d39a;
+    --success-soft: #1e3a30;
+    --warning: #f3b754;
+    --warning-soft: #3d321e;
+    --error: #ff858c;
+    --error-soft: #41272d;
+  }
+}
+
+* {
+  box-sizing: border-box;
+  margin: 0;
+  padding: 0;
+}
+
+html,
+body {
+  width: 336px;
+}
+
+body {
+  padding: 20px;
+  overflow: hidden;
+  background: var(--page);
+  color: var(--text);
+  -webkit-font-smoothing: antialiased;
+}
+
+.masthead {
+  display: flex;
+  align-items: center;
+  gap: 11px;
+  margin-bottom: 20px;
+}
+
+.brand-mark {
+  display: grid;
+  width: 38px;
+  height: 38px;
+  place-items: center;
+  border-radius: 12px;
+  overflow: hidden;
+}
+
+.brand-mark img {
+  width: 38px;
+  height: 38px;
+  object-fit: cover;
+}
+
+h1 {
+  font-size: 16px;
+  font-weight: 700;
+  letter-spacing: -0.25px;
+  line-height: 1.15;
+}
+
+.sub {
+  margin-top: 2px;
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 500;
+}
+
+.callout {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  min-height: 60px;
+  margin-bottom: 12px;
+  padding: 12px;
+  border: 1px solid transparent;
+  border-radius: 14px;
+  background: var(--surface-soft);
+}
+
+.status-icon {
+  display: grid;
+  flex: 0 0 28px;
+  width: 28px;
+  height: 28px;
+  place-items: center;
+  border-radius: 9px;
+  color: var(--muted);
+  background: var(--surface);
+}
+
+.status-icon svg,
+.check-icon svg,
+.icon {
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.8;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
+.status-icon svg {
+  width: 17px;
+  height: 17px;
+}
+
+.status-ready {
+  display: none;
+}
+
+.callout.ok .status-default {
+  display: none;
+}
+
+.callout.ok .status-ready {
+  display: block;
+}
+
+.status-copy {
+  display: grid;
+  min-width: 0;
+  gap: 2px;
+}
+
+.callout-title {
+  font-size: 13px;
+  font-weight: 700;
+}
+
+.callout-body {
+  color: var(--muted);
+  font-size: 11px;
+  line-height: 1.35;
+}
+
+.callout.warning {
+  border-color: color-mix(in srgb, var(--warning) 18%, transparent);
+  background: var(--warning-soft);
+}
+
+.callout.warning .status-icon,
+.callout.warning .callout-title {
+  color: var(--warning);
+}
+
+.callout.ok {
+  border-color: color-mix(in srgb, var(--success) 18%, transparent);
+  background: var(--success-soft);
+}
+
+.callout.ok .status-icon,
+.callout.ok .callout-title {
+  color: var(--success);
+}
+
+.callout.error {
+  border-color: color-mix(in srgb, var(--error) 18%, transparent);
+  background: var(--error-soft);
+}
+
+.callout.error .status-icon,
+.callout.error .callout-title {
+  color: var(--error);
+}
+
+.btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  min-height: 42px;
+  padding: 0 14px;
+  border: 0;
+  border-radius: 12px;
+  color: var(--text);
+  background: var(--surface);
+  font: 700 13px/1 "Avenir Next", Avenir, "Trebuchet MS", sans-serif;
+  cursor: pointer;
+  transition: transform 120ms ease, background-color 120ms ease, opacity 120ms ease;
+}
+
+.btn:hover:not(:disabled) {
+  background: var(--surface-soft);
+}
+
+.btn:active:not(:disabled) {
+  transform: scale(0.975);
+}
+
+.btn:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+.btn:disabled {
+  opacity: 0.35;
+  cursor: default;
+}
+
+.btn-filled {
+  width: 100%;
+  min-height: 46px;
+  margin-bottom: 12px;
+  color: #fff;
+  background: var(--accent);
+}
+
+.btn-filled:hover:not(:disabled) {
+  background: var(--accent-hover);
+}
+
+.icon {
+  width: 18px;
+  height: 18px;
+}
+
+.checks {
+  overflow: hidden;
+  margin-bottom: 12px;
+  border: 1px solid var(--line);
+  border-radius: 14px;
+  background: var(--surface);
+}
+
+.check {
+  display: grid;
+  grid-template-columns: 28px 1fr auto;
+  align-items: center;
+  gap: 9px;
+  min-height: 48px;
+  padding: 8px 12px;
+}
+
+.check + .check {
+  border-top: 1px solid var(--line);
+}
+
+.check-icon {
+  display: grid;
+  width: 28px;
+  height: 28px;
+  place-items: center;
+  border-radius: 9px;
+  color: var(--muted);
+  background: var(--surface-soft);
+}
+
+.check-icon svg {
+  width: 16px;
+  height: 16px;
+}
+
+.label {
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.value {
+  color: var(--muted);
+  font-size: 11px;
+  font-weight: 600;
+  text-align: right;
+}
+
+.value.ready {
+  color: var(--success);
+}
+
+.value.missing {
+  color: var(--warning);
+}
+
+/* ── Google Sign-In section ─────────────────────────────────────────────── */
+
+.google-signin-section {
+  margin-bottom: 12px;
+  padding: 12px;
+  border: 1px solid var(--line);
+  border-radius: 14px;
+  background: var(--surface);
+  text-align: center;
+}
+
+.signin-hint {
+  color: var(--muted);
+  font-size: 11px;
+  line-height: 1.4;
+  margin-bottom: 10px;
+}
+
+.btn-google {
+  width: 100%;
+  min-height: 42px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: var(--surface);
+  color: var(--text);
+  font: 600 13px/1 "Avenir Next", Avenir, "Trebuchet MS", sans-serif;
+  gap: 8px;
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  transition: background-color 120ms ease, box-shadow 120ms ease;
+}
+
+.btn-google:hover:not(:disabled) {
+  background: var(--surface-soft);
+  box-shadow: 0 1px 4px rgba(0,0,0,.08);
+}
+
+.btn-google:active:not(:disabled) {
+  transform: scale(0.975);
+}
+
+.btn-google:disabled {
+  opacity: 0.45;
+  cursor: default;
+}
+
+.google-icon {
+  width: 18px;
+  height: 18px;
+  flex-shrink: 0;
+  /* Google icon has its own fill colours, no stroke */
+  stroke: none;
+  fill: none;
+}
+
+/* ── Action buttons (3-up grid) ─────────────────────────────────────────── */
+
+.actions {
+  display: grid;
+  /* 2 cols top row (Copy + Download), full-width Push below */
+  grid-template-columns: 1fr 1fr;
+  grid-template-rows: auto auto;
+  gap: 9px;
+}
+
+.btn-push {
+  grid-column: 1 / -1; /* span full width */
+}
+
+.btn-secondary {
+  width: 100%;
+  border: 1px solid var(--line);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .btn {
+    transition: none;
+  }
+
+  .btn:active:not(:disabled) {
+    transform: none;
+  }
+}
+
+@media (prefers-contrast: more) {
+  .callout,
+  .checks,
+  .btn-secondary {
+    border-color: currentColor;
+  }
+}
+
+/* Sign-out-after-push toggle */
+.toggle {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  margin: 10px 16px 0;
+  color: var(--muted);
+  font-size: 11px;
+  line-height: 1.4;
+  cursor: pointer;
+}
+
+.toggle input {
+  margin: 1px 0 0;
+  accent-color: var(--accent);
+  flex: none;
+}
+
+.toggle-text {
+  flex: 1;
+}
+
+.toggle:has(input:checked) .toggle-text {
+  color: var(--text);
+}

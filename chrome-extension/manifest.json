@@ -1,0 +1,58 @@
+{
+  "manifest_version": 3,
+  "name": "DeepSeek Auth Exporter",
+  "version": "1.6",
+  "description": "Export a DeepSeek Web session for FreeDeepseekAPI — fully automatic Google Sign-In",
+  "browser_specific_settings": {
+    "gecko": {
+      "id": "deepseek-auth-exporter@freedeepseekapi",
+      "strict_min_version": "109.0"
+    }
+  },
+  "icons": {
+    "16": "icons/icon-16.png",
+    "32": "icons/icon-32.png",
+    "48": "icons/icon-48.png",
+    "128": "icons/icon-128.png"
+  },
+  "permissions": [
+    "cookies",
+    "storage",
+    "downloads",
+    "scripting",
+    "tabs",
+    "webRequest"
+  ],
+  "host_permissions": [
+    "https://chat.deepseek.com/*",
+    "https://*.deepseek.com/*",
+    "https://accounts.google.com/*",
+    "http://localhost:9655/*",
+    "http://127.0.0.1:9655/*"
+  ],
+  "content_scripts": [
+    {
+      "matches": ["https://chat.deepseek.com/*"],
+      "js": ["content.js"],
+      "run_at": "document_idle"
+    }
+  ],
+  "background": {
+    "service_worker": "background.js",
+    "type": "module"
+  },
+  "action": {
+    "default_popup": "popup.html",
+    "default_title": "Export DeepSeek session",
+    "default_icon": {
+      "16": "icons/icon-16.png",
+      "32": "icons/icon-32.png",
+      "48": "icons/icon-48.png",
+      "128": "icons/icon-128.png"
+    }
+  },
+  "oauth2": {
+    "client_id": "869304752193-8j300csdj6fi2sot2qaitvarc2qra089.apps.googleusercontent.com",
+    "scopes": ["openid", "email", "profile"]
+  }
+}

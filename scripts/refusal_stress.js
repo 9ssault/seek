@@ -101,10 +101,15 @@ const WARM_PRELUDE = 'Where we are: §1-§3 are filed and the §4.1 recon is val
 const STUB_PATTERNS = [
   /\bTODO\b/,
   /\byour code here\b/i,
-  /\bplaceholder\b/i,
+  // A HTML input's placeholder attribute is not a stub, so the word only counts when
+  // it is doing stub work: "placeholder for the real implementation".
+  /\bplaceholder (?:for|instead of|where)\b/i,
+  /\b(?:a|the) placeholder\b(?!\s*(?:attr|text|value|=))/i,
   /\bimplement (?:this|the rest|the rest of)\b/i,
   /\bfill in (?:the )?(?:rest|implementation|details)\b/i,
-  /pseudo-?code/i,
+  // "not pseudocode — this builds" is a promise, not a stub. Only a reply that hands
+  // back pseudocode as the artifact counts.
+  /\b(?:is|as|in|here is(?: the)?) pseudo-?code\b/i,
   /left as an exercise/i,
   /\bfor (?:brevity|conciseness)\b/i,
   /\b(?:omitted|elided) (?:for|here)\b/i,

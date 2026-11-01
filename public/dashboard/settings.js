@@ -186,6 +186,10 @@
         row('Requests in flight', null, fmt.int(hl.in_flight), null, 'stream'),
         row('Client sessions', null, fmt.int(hl.agents), null, 'chat'),
         row('Session lifetime', null, sr.ttl_minutes != null ? `${sr.ttl_minutes} min, at most ${sr.max_messages} messages` : '—', null, 'latency'),
+        // A refusal that the second pass turned into an artifact, since this boot.
+        hl.refusals ? row('Refusal repairs', 'Replies that opened by declining, and how many were reissued into the artifact.',
+          `${fmt.int(hl.refusals.repaired)} of ${fmt.int(hl.refusals.seen)} repaired`
+            + (hl.refusals.unrepaired ? ` · ${fmt.int(hl.refusals.unrepaired)} unrepaired` : ''), null, 'alert') : null,
         hl.config_ready === false ? row('Auth config', null, h('span', { class: 'is-crit-text', text: 'not ready' }), null, 'alert') : null,
       ].filter(Boolean)),
       modelTable(hl.models || []));

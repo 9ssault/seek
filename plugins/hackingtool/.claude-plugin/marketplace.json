@@ -1,0 +1,19 @@
+{
+  "name": "hackingtool-marketplace",
+  "owner": {
+    "name": "ARIACODEZ"
+  },
+  "metadata": {
+    "description": "Claude Code plugins for security testing and OSINT workflows.",
+    "version": "0.2.0"
+  },
+  "plugins": [
+    {
+      "name": "hackingtool",
+      "source": "./plugins/hackingtool",
+      "description": "183+ pentesting and OSINT tools (nmap, nuclei, amass, subfinder, httpx, sherlock, maigret, trufflehog, sqlmap, impacket, and more) wired into Claude Code. Runs locally on any OS via native Bash, WSL, or purpose-built Docker images — Claude picks the right backend and image automatically.",
+      "category": "security",
+      "tags": ["security", "pentest", "osint", "recon", "hackingtool"]
+    }
+  ]
+}

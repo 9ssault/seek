@@ -39,6 +39,15 @@ npm run setup:agents      # Claude Code, Codex, OpenCode, Hermes, OpenClaw
 
 Any OpenAI-compatible client works: base URL `http://127.0.0.1:9655/v1`, key `local` (or `PROXY_API_KEY`), model `deepseek-v4-flash`, with `-thinking` and `-nosearch` variants.
 
+## Tools on `/`
+
+The reverse-engineering and pentest tools installed on this machine become slash commands in OpenCode and Codex — `/rea`, `/jadx`, `/apktool`, `/ghidra`, `/rizin`, `/ida`, `/frida`, `/gdb`, `/tshark`, `/nmap`, `/binwalk`, `/unblob`, `/yara`, and `/pentest` (183+ recon and OSINT tools from [AKCodez/hackingtool-plugin](https://github.com/AKCodez/hackingtool-plugin), vendored in `plugins/hackingtool/`).
+
+```bash
+npm run setup:tools            # what is installed, written to both harnesses
+npm run setup:tools -- --all   # every entry, missing ones marked
+```
+
 ## What it keeps straight
 
 - One conversation, one upstream chat. A new conversation gets a new chat instead of continuing the last one.

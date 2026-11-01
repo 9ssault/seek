@@ -9,3 +9,21 @@ auth.json
 .freedeepseek-api/
 accounts/*.json
 /accounts/*.json
+
+# local data — never tracked, never pushed
+reports/
+profiles/
+dossiers/
+cache/
+data/
+wordlists/
+backups/
+venvs/
+runs-*.json
+runs-*.csv
+*.sqlite
+*.sqlite3
+cron.log
+targets.tsv
+chat-*.jsonl
+*.log

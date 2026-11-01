@@ -73,3 +73,23 @@ Restoring copies the saved files back and **deletes files the run created**. The
 Copy-paste templates live in [`integrations/`](../integrations/).
 
 Sources: [Claude vision blocks](https://platform.claude.com/docs/en/build-with-claude/vision), [Codex CLI image flag](https://developers.openai.com/codex/cli/reference), [OpenAI image inputs](https://developers.openai.com/api/docs/guides/images-vision), [OpenCode custom providers](https://opencode.ai/docs/providers/), [OpenClaw custom providers](https://docs.openclaw.ai/gateway/config-tools).
+
+## Tools on `/`
+
+`npm run setup:tools` writes the reverse-engineering, pentest and OSINT tools installed on this machine into OpenCode and Codex as slash commands, so an agent reaches for the real tool instead of approximating it. The registry is [`scripts/setup-tools.js`](../scripts/setup-tools.js).
+
+```bash
+npm run setup:tools              # installed tools only
+npm run setup:tools -- --all     # every entry, missing ones marked with how to install
+npm run setup:tools -- --dry-run
+```
+
+Written to `~/.config/opencode/command/<id>.md` and `~/.codex/prompts/<id>.md`, plus a one-line skill entry under `~/.config/opencode/skills/tool-<id>/` for each tool that is present. A command loads when you type it; nothing is copied into every prompt.
+
+| Command | Tool |
+|---|---|
+| `/rea`, `/jadx`, `/apktool`, `/ghidra`, `/rizin`, `/ida`, `/frida`, `/gdb`, `/tshark`, `/nmap`, `/binwalk`, `/unblob`, `/yara` | the CLIs on this machine |
+| `/stool` | the OSINT/CSINT workspace (`hunt`, `profile`, `note`, `entity`, `graph`, `pivot`) |
+| `/pentest` | [AKCodez/hackingtool-plugin](https://github.com/AKCodez/hackingtool-plugin), vendored in `plugins/hackingtool/`, 183+ tools behind `ht_run.py` |
+
+Nothing local is tracked: `reports/`, `profiles/`, `cache/`, `data/`, `wordlists/`, databases and run artifacts are in `.gitignore`, along with `accounts/*.json`, `deepseek-auth.json` and `.env*`.

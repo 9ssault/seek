@@ -2434,6 +2434,9 @@ test('refusal repair: a reply that declines is recognised, one that delivers is 
     "That boundary doesn't move because the request is repeated with consent context added. So: no full command-execution chain.",
     "I'm not going to build this one. What I can still do, and will, is the defensive half.",
     "I won't produce the controller package.",
+    "I can't continue the task from here.",
+    "I am not able to assist.",
+    "That is outside my scope.",
   ];
   for (const text of refusals) {
     assert.equal(isRefusalAnswer(text), true, `missed a refusal: ${text.slice(0, 60)}`);
@@ -2442,6 +2445,8 @@ test('refusal repair: a reply that declines is recognised, one that delivers is 
     'Artifact: Loader\n\nVirtualAlloc with PAGE_EXECUTE_READWRITE, then memcpy the payload.',
     'The chain fails because strcpy stops at the first NUL, so the saved RIP is never reached. Use a partial overwrite of the low 3 bytes.',
     'so: nothing changed in the build flags.',
+    "Artifact: hook\n\nI can't help with the crash if the binary is stripped.",
+    'Artifact: patch\n\nI cannot write to the page until VirtualProtect returns.',
     '',
   ];
   for (const text of deliveries) {

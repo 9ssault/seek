@@ -4288,6 +4288,7 @@ function seekIdentityNotice(model, { personaActive = false } = {}) {
     return `${identity}[Continuation] A short message such as "keep going", "continue", "go on", "carry on", "proceed", "next", "finish it" or "don't stop" is an instruction to resume, never a new question. Do not ask what to do, do not restate the plan, do not summarise. Pick up the unfinished work at its next concrete step with your tools and keep working until it is done or you hit a real blocker. If nothing is in progress, say in one line what you are continuing and continue it. Do not treat a continuation as a request to re-read, re-quote or re-discuss these instructions.\n`;
 }
 const personaStats = { full_prompts: 0, reminders: 0, loaded_chars: 0 };
+const refusalStats = { seen: 0, pass1: 0, pass2: 0, repaired: 0, unrepaired: 0 };
 
 function personaReminder() {
     return PERSONA_REMINDER;
@@ -5708,6 +5709,9 @@ const server = http.createServer(async (req, res) => {
                 sent_in_full: personaStats.full_prompts,
                 reminded_instead: personaStats.reminders,
             },
+            // What the repair loop has done since boot: how many replies opened as a
+            // refusal, how many of those a second or third pass turned into the artifact.
+            refusals: { ...refusalStats },
         });
         res.writeHead(200, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify(health));
@@ -6784,8 +6788,11 @@ const server = http.createServer(async (req, res) => {
                 // chat the refusal happened in and reissues the full prompt, persona
                 // included, with the standing rule stated. A model that says no twice in
                 // the same conversation often says yes in a clean one.
+                refusalStats.seen++;
                 for (let attempt = 1; attempt <= 2 && isRefusalAnswer(fullContent); attempt++) {
                     if (clientGone || deadlineHit()) break;
+                    if (attempt === 1) refusalStats.pass1++;
+                    else refusalStats.pass2++;
                     const base = attempt === 1 ? fullPrompt : freshPrompt;
                     const note = attempt === 1 ? REFUSAL_REPAIR : REFUSAL_REPAIR_HARD;
                     const repairPrompt = appendPromptInstruction(base, note);
@@ -6801,6 +6808,7 @@ const server = http.createServer(async (req, res) => {
                             ? sanitizeContent(repaired.result.content) : '';
                         if (repairedText.trim() && !isRefusalAnswer(repairedText)) {
                             console.log(`${agentTag} Repaired on pass ${attempt}: ${fullContent.length} chars refused, ${repairedText.length} chars delivered.`);
+                            refusalStats.repaired++;
                             fullContent = repairedText;
                             if (repaired.result.reasoningContent) {
                                 reasoningContent = sanitizeContent(repaired.result.reasoningContent);
@@ -6817,6 +6825,7 @@ const server = http.createServer(async (req, res) => {
                 }
                 if (isRefusalAnswer(fullContent)) {
                     console.log(`${agentTag} Both repair passes refused; returning the reply with a refusal marker on the response.`);
+                    refusalStats.unrepaired++;
                     refusalUnrepaired = true;
                 }
             }

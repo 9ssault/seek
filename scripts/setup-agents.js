@@ -898,6 +898,12 @@ const TARGETS = {
           options: { baseURL: openaiBase(opts.baseUrl), apiKey: opts.apiKey },
           models,
         };
+        // The operator's standard reaches every model, not only the gateway's: OpenCode
+        // loads each path in `instructions` as prompt text, so the file stays the one
+        // copy and an edit lands in the agents and the proxy at the same time.
+        const standard = agentStandardPath();
+        cfg.instructions = Array.isArray(cfg.instructions) ? cfg.instructions.slice() : [];
+        if (!cfg.instructions.includes(standard)) cfg.instructions.push(standard);
         cfg.tools = { ...(cfg.tools && typeof cfg.tools === 'object' ? cfg.tools : {}), websearch: false, webfetch: false };
         cfg.permission = { ...(cfg.permission && typeof cfg.permission === 'object' ? cfg.permission : {}), websearch: 'deny', webfetch: 'deny' };
         if (String(cfg.model || '').startsWith('freedeepseek/')) cfg.model = 'freedeepseek/deepseek-v4-flash-thinking';
@@ -2225,6 +2231,39 @@ async function showResults(wizard, results) {
 
 // ---------- CLI ----------
 
+// The standard that ships with this repo. The gateway appends it to every request;
+// agents that read prompt files natively get the same text by path or link, so there
+// is one copy to edit and no drift between the agent and the proxy.
+function agentStandardPath() {
+  return path.resolve(__dirname, '..', 'docs', 'agents', 'principal-adversarial-engineer.md');
+}
+
+// Codex reads ~/.codex/AGENTS.md as its global instructions. A symlink keeps that file
+// and the repo copy identical; Windows without symlink rights gets a copy instead.
+function linkCodexStandard(ctx, opts) {
+  const target = agentStandardPath();
+  const link = path.join(ctx.home, '.codex', 'AGENTS.md');
+  if (opts.dryRun) {
+    console.log(`[dry-run] link ${link} → ${target}`);
+    return;
+  }
+  ensureDir(path.dirname(link));
+  let existing = null;
+  try { existing = fs.lstatSync(link); } catch (error) { existing = null; }
+  if (existing && !existing.isSymbolicLink()) {
+    console.log(`Codex: ${link} exists and is not a link; left alone.`);
+    return;
+  }
+  try {
+    if (existing) fs.unlinkSync(link);
+    fs.symlinkSync(target, link);
+    console.log(`linked ${link} → ${target}`);
+  } catch (error) {
+    fs.copyFileSync(target, link);
+    console.log(`copied ${target} → ${link}`);
+  }
+}
+
 function cliSentences(target, opts, plan) {
   const p = id => plan.files.find(f => f.id === id).path;
   switch (target) {
@@ -2375,6 +2414,14 @@ async function main(argv = process.argv) {
       }
       if (applied.backup) console.log(`\nBackups: ${applied.backup.dir}\nRestore: node scripts/setup-agents.js --restore ${applied.backup.dir}`);
       else console.log('\nEvery file already matched, so nothing was written and no backup was made.');
+    }
+  }
+  if (opts.targets.includes('codex')) {
+    try {
+      linkCodexStandard(ctx, opts);
+    } catch (error) {
+      if (!wizard) throw error;
+      results.push({ target: 'codex', ok: false, error: `Could not link the agent standard into ~/.codex/AGENTS.md: ${error.message}` });
     }
   }
   if (cursorPlan) {

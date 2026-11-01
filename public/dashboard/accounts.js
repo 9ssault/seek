@@ -41,6 +41,8 @@
       'clear-cooldown': ['Clearing…', 'POST', `/admin/accounts/${encodeURIComponent(id)}/clear-cooldown`, undefined, `Cleared the cooldown on ${nameOf(account)}.`],
       'file-disable': ['Disabling…', 'PATCH', `/admin/accounts/${encodeURIComponent(id)}`, { enabled: false }, `Disabled ${nameOf(account)} in its file. It stays disabled after a restart.`],
       'file-enable': ['Enabling…', 'PATCH', `/admin/accounts/${encodeURIComponent(id)}`, { enabled: true }, `Enabled ${nameOf(account)} in its file.`],
+      probe: ['Probing…', 'POST', `/admin/accounts/${encodeURIComponent(id)}/probe`, undefined, `Probed ${nameOf(account)}.`],
+      refresh: ['Refreshing…', 'POST', `/admin/accounts/${encodeURIComponent(id)}/refresh`, undefined, `Refreshed ${nameOf(account)}.`],
     };
     const [pendingLabel, method, path, body, done] = verbs[kind];
     st.pending.set(id, pendingLabel);
@@ -51,7 +53,13 @@
     try {
       const res = await F.api(method, path, { body });
       F.applyAccountUpdate(res);
-      F.toast(done, { tone: 'success' });
+      const probe = res?.probe || res?.refresh?.probe;
+      if (probe) {
+        const verdict = probe.ok ? 'valid' : `${probe.kind}${probe.status ? ` (${probe.status})` : ''}`;
+        F.toast(`${nameOf(account)}: ${verdict} in ${probe.latencyMs} ms`, { tone: probe.ok ? 'success' : 'warn' });
+      } else {
+        F.toast(done, { tone: 'success' });
+      }
     } catch (e) {
       if (!F.handleGate(e)) {
         const msg = F.errorText(e);
@@ -140,6 +148,8 @@
     else if (paused) items.push({ label: 'Resume routing', icon: 'play', run: () => action(account, 'enable') });
     else items.push({ label: 'Pause routing', icon: 'pause', run: () => action(account, 'disable') });
     items.push({ label: 'Clear cooldown', icon: 'clear-cooldown', disabled: account.status !== 'cooldown', reason: 'Not cooling down', run: () => action(account, 'clear-cooldown') });
+    items.push({ label: 'Test token', icon: 'probe', disabled: !account.credentials?.token, reason: 'No token', run: () => action(account, 'probe') });
+    items.push({ label: 'Refresh token', icon: 'refresh', disabled: !account.credentials?.token, reason: 'No token', run: () => action(account, 'refresh') });
     if (account.disabled_by !== 'file') items.push({ label: 'Disable in file', icon: 'lock', run: () => action(account, 'file-disable') });
     items.push('sep');
     items.push({ label: 'View requests', icon: 'requests', run: () => F.navigate('requests', '', { account: account.id }) });
@@ -215,8 +225,21 @@
     const note = h('p', { class: 'meta table-note', text: 'Usage is since the server started. Tokens are estimates (characters ÷ 4). Pause is runtime only; Disable in file survives a restart.' });
 
     const hero = F.pageHero({ image: '/dashboard/media-surface.jpg', label: 'Account pool', position: '50% 40%' });
+    const probeAll = F.btn('Probe all', { size: 'sm', onclick: async (e) => {
+      const btn = e.currentTarget;
+      F.setPending(btn, 'Probing…');
+      try {
+        const res = await F.api('POST', '/admin/accounts/probe-all');
+        F.applyAccountUpdate(res);
+        F.toast(`${res.ok} valid · ${res.failed} failed`, { tone: res.failed ? 'warn' : 'success' });
+      } catch (err) {
+        if (!F.handleGate(err)) F.toastError('Probe failed', err);
+      } finally {
+        F.clearPending(btn);
+      }
+    } });
     root.append(hero, h('div', { class: 'view-pad' },
-      h('div', { class: 'filter-row' }, h('label', { class: 'search-field search-field-inline' }, F.icon('search'), filterInput), chips, count),
+      h('div', { class: 'filter-row' }, h('label', { class: 'search-field search-field-inline' }, F.icon('search'), filterInput), chips, count, probeAll),
       banner,
       h('div', { class: 'table-scroll' }, table),
       empty,
@@ -325,6 +348,7 @@
     tr.classList.toggle('is-out', a.status === 'disabled' || a.status === 'no_credentials');
     const inline = [];
     if (a.status === 'cooldown') inline.push(F.btn('Clear', { size: 'sm', onclick: (e) => action(a, 'clear-cooldown', e.currentTarget), 'data-focus-key': `clear-${a.id}` }));
+    if (a.credentials?.token && (a.status === 'ready' || a.status === 'busy')) inline.push(F.btn('Test', { size: 'sm', onclick: (e) => action(a, 'probe', e.currentTarget), 'data-focus-key': `probe-${a.id}` }));
     if (a.status === 'disabled' && a.disabled_by === 'admin') inline.push(F.btn('Resume', { size: 'sm', onclick: (e) => action(a, 'enable', e.currentTarget), 'data-focus-key': `resume-${a.id}` }));
     const more = F.iconBtn('more', `Actions for ${nameOf(a)}`, { 'aria-haspopup': 'menu', 'aria-expanded': 'false', 'data-focus-key': `more-${a.id}` });
     more.addEventListener('click', (e) => { e.stopPropagation(); rowMenu(a, more); });

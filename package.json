@@ -1,7 +1,7 @@
 {
-  "name": "free-deepseek-api",
+  "name": "seek",
   "version": "0.5.0",
-  "description": "DeepSeek for free — private, powerful and ready for your favorite apps and coding agents",
+  "description": "seek — a self-hosted gateway to DeepSeek web: one chat per conversation, a login pool, cumulative memory, made by Hyperion.",
   "main": "server.js",
   "bin": {
     "free-deepseek-api": "./server.js",

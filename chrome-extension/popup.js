@@ -13,6 +13,10 @@ if (typeof chrome === 'undefined' && typeof browser !== 'undefined') {
 
 const WASM_URL = 'https://fe-static.deepseek.com/chat/static/sha3_wasm_bg.7b9ca65ddd.wasm';
 const PROXY_URLS = ['http://127.0.0.1:9655', 'http://localhost:9655'];
+// How many logins the pool has, and whether this capture is already one of them.
+// Two chats on one login is what gets that login throttled, so a duplicate is
+// reported before anything is pushed (and before this browser is signed out).
+let poolSnapshot = null;
 
 const els = {
   callout:           document.getElementById('callout'),
@@ -249,12 +253,55 @@ els.btnSave.addEventListener('click', () => {
 
 // ─── Push to Proxy button ────────────────────────────────────────────────────
 
+async function readPool() {
+  for (const base of PROXY_URLS) {
+    try {
+      const res = await fetch(`${base}/health`, { cache: 'no-store' });
+      if (!res.ok) continue;
+      const json = await res.json();
+      const accounts = Array.isArray(json?.accounts) ? json.accounts : [];
+      return {
+        base,
+        total: accounts.length,
+        ready: accounts.filter(a => a && a.ready !== false && a.enabled !== false && !a.cooldown).length,
+        labels: accounts.map(a => String(a?.name || a?.id || '').toLowerCase()).filter(Boolean),
+      };
+    } catch { /* try the next origin */ }
+  }
+  return null;
+}
+
+function poolMatches(who) {
+  const needle = String(who || '').trim().toLowerCase();
+  if (!needle || !poolSnapshot?.labels?.length) return false;
+  return poolSnapshot.labels.includes(needle);
+}
+
+function renderPool() {
+  const el = document.getElementById('poolLine');
+  if (!el) return;
+  if (!poolSnapshot) {
+    el.textContent = 'proxy offline';
+    el.dataset.state = 'off';
+    return;
+  }
+  el.textContent = `${poolSnapshot.ready}/${poolSnapshot.total} logins ready`;
+  el.dataset.state = 'on';
+}
+
 els.btnPush.addEventListener('click', async () => {
   if (!lastExport?.token || !lastExport?.cookie) return;
   els.btnPush.disabled = true;
 
   // Server expects { name, auth } — derive a display name from the session.
   const accountName = lastExport.name || lastExport.email || 'DeepSeek Account';
+  poolSnapshot = poolSnapshot || await readPool();
+  if (poolMatches(lastExport.email || lastExport.name)) {
+    renderPool();
+    showCallout('warning', 'Already in the pool', `${accountName} is already one of the proxy's logins. Nothing was pushed and nothing was signed out.`);
+    els.btnPush.disabled = false;
+    return;
+  }
   const payload = JSON.stringify({ name: accountName, auth: lastExport });
   let pushed    = false;
   let lastError = '';
@@ -286,6 +333,7 @@ els.btnPush.addEventListener('click', async () => {
             : `Session sent to ${base}`
         );
         flashButton(els.btnPush, '✓ Pushed');
+        readPool().then((pool) => { poolSnapshot = pool; renderPool(); });
         break;
       } else {
         // Surface the server's error message when the request reaches the proxy
@@ -400,6 +448,7 @@ els.chkSignOut?.addEventListener('change', () => {
 if (inExtension()) {
   loadSignOutPreference();
   loadAuth();
+  readPool().then((pool) => { poolSnapshot = pool; renderPool(); });
 } else {
   render({});
 }

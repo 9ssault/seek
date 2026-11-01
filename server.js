@@ -21,6 +21,7 @@ const net = require('net');
 const { spawn, spawnSync } = require('child_process');
 const pow = require('./lib/pow');
 const authHealth = require('./lib/auth-health');
+const authRefresh = require('./lib/auth-refresh');
 const { createUpdater, RESTART_EXIT_CODE } = require('./lib/updater');
 const { t, loadUiLang, saveUiLang, pick, pause, printWordmark, browserOpenCommand } = require('./scripts/lib/tui-menu');
 
@@ -315,7 +316,7 @@ function buildBaseHeaders(config = DS_CONFIG) {
         "x-client-locale": "en",
         "x-client-timezone-offset": "-240",
         "x-app-version": "2.4.2",
-        "Authorization": `Bearer ${config.token || ''}`,
+        "Authorization": `Bearer ${authRefresh.cleanToken(config.token)}`,
         "x-hif-dliq": config.hif_dliq || '',
         "x-hif-leim": config.hif_leim || '',
         "Origin": "https://chat.deepseek.com",
@@ -405,7 +406,10 @@ function readAccountFiles(paths) {
         try {
             const json = JSON.parse(fs.readFileSync(file, 'utf8'));
             if (!json || typeof json !== 'object') throw new Error('expected a JSON object');
-            for (const entry of expandAuthFile(file, json)) loaded.push(entry);
+            for (const entry of expandAuthFile(file, json)) {
+                authRefresh.normalizeConfig(entry.config);
+                loaded.push(entry);
+            }
         } catch (e) {
             errors.push({ file, message: describeAuthFileError(e) });
         }
@@ -933,9 +937,14 @@ function markAccountFailure(account, status, reason = '', retryAfterRaw = null, 
             return;
         }
         countAccountFailure(account, 'auth', code, detail || `HTTP ${code}`);
-        account.cooldownUntil = Math.max(account.cooldownUntil || 0, Date.now() + DEFAULT_ACCOUNT_COOLDOWN_MS);
-        account.cooldownReason = 'auth';
-        console.log(`[account:${account.id}] cooldown for ${Math.round(DEFAULT_ACCOUNT_COOLDOWN_MS / 1000)}s after HTTP ${code}${reason ? ` (${reason})` : ''}`);
+        // Three auth failures in a row is a dead token, not a blip: park it long
+        // enough that the pool stops choosing it while a refresh is attempted.
+        const dead = (account.failures || 0) >= 3;
+        const cooldown = dead ? Math.max(DEFAULT_ACCOUNT_COOLDOWN_MS, 60 * 60 * 1000) : DEFAULT_ACCOUNT_COOLDOWN_MS;
+        account.cooldownUntil = Math.max(account.cooldownUntil || 0, Date.now() + cooldown);
+        account.cooldownReason = dead ? 'auth_expired' : 'auth';
+        if (dead) account.invalid = true;
+        console.log(`[account:${account.id}] cooldown for ${Math.round(cooldown / 1000)}s after HTTP ${code}${reason ? ` (${reason})` : ''}${dead ? ' (token looks dead; refresh attempted)' : ''}`);
         return;
     }
     // Any other upstream failure (plain 400, 5xx, malformed body) is counted but
@@ -946,6 +955,7 @@ function recordAccountSuccess(account) {
     if (!account) return;
     account.failures = 0;
     account.rateLimitStreak = 0;
+    account.invalid = false;
     account.lastSuccessAt = Date.now();
 }
 // Mark the login as rate-limited and return a typed 429 the request handler
@@ -3281,12 +3291,48 @@ function storeHistory(agentId, prompt, content, toolCall) {
     const shortPrompt = prompt.length > 500 ? '...' + prompt.substring(prompt.length - 500) : prompt;
     session.history.push({ user: shortPrompt, assistant: assistantResponse });
     markMemoryDirty();
-    while (session.history.length > MAX_HISTORY_LENGTH) session.history.shift();
+    const evicted = [];
+    while (session.history.length > MAX_HISTORY_LENGTH) evicted.push(session.history.shift());
     let historyChars = session.history.reduce((sum, e) => sum + e.user.length + e.assistant.length, 0);
     while (historyChars > MAX_HISTORY_CHARS && session.history.length > 1) {
         const removed = session.history.shift();
         historyChars -= removed.user.length + removed.assistant.length;
+        evicted.push(removed);
     }
+    if (evicted.length) foldEvictedTurns(session, evicted);
+}
+
+// Turns that age out of `history` are folded into the session's memory right away,
+// in the background, while an account is idle. Waiting until a prompt is trimmed
+// meant the summary was built on the critical path of a live request; by then it is
+// already written. Failure is silent: the raw turns were only a recovery hint anyway.
+const SUMMARY_FOLD_MIN_CHARS = 600;
+
+function foldEvictedTurns(session, evicted = []) {
+    if (!SUMMARY_ENABLED || !session || !evicted.length) return;
+    if (session.folding) {
+        session.foldingPending = (session.foldingPending || []).concat(evicted);
+        return;
+    }
+    const text = evicted.map(e => `User: ${e.user}\nAssistant: ${e.assistant}`).join('\n\n');
+    if (text.length < SUMMARY_FOLD_MIN_CHARS) return;
+    session.folding = true;
+    summarizeForContext(text, {
+        excludeAccountId: session.accountId,
+        model: SUMMARY_MODEL,
+        purpose: 'fold',
+        previous: session.compactionSummary,
+    }).then((summary) => {
+        if (summary) {
+            session.compactionSummary = summary;
+            markMemoryDirty();
+        }
+    }).catch(() => {}).finally(() => {
+        session.folding = false;
+        const pending = session.foldingPending;
+        session.foldingPending = null;
+        if (pending && pending.length) foldEvictedTurns(session, pending);
+    });
 }
 
 // Extract MEDIA: paths from the current turn's tool results (the tool messages after
@@ -3435,12 +3481,37 @@ function summaryBlock(summary) {
     return `${SUMMARY_MARKER_START}\n${truncatePromptMiddle(text, SUMMARY_MAX_CHARS, 0.8)}\n${SUMMARY_MARKER_END}\n\n`;
 }
 
+// Keeps the persona slice byte-identical and fits everything else around it. With no
+// persona this is plain middle-truncation, exactly as before.
+function boundSystemPrompt(system, budget, { personaStart = 0, personaChars = 0 } = {}) {
+    if (!personaChars || !system) return truncatePromptMiddle(system, budget, 0.35);
+    const start = Math.max(0, Math.min(Number(personaStart) || 0, system.length));
+    const end = Math.min(system.length, start + personaChars);
+    const persona = system.slice(start, end);
+    const before = system.slice(0, start);
+    const after = system.slice(end);
+    let room = budget - persona.length;
+    // The tool adapter lives after the persona and is small: keep it whole if it fits.
+    const keepAfter = after.length <= room ? after : truncatePromptMiddle(after, Math.max(0, room), 0.8);
+    if (keepAfter) room -= keepAfter.length;
+    const keepBefore = room > 0 && before.length ? truncatePromptMiddle(before, Math.min(before.length, room), 0.5) : '';
+    return `${keepBefore}${persona}${keepAfter}`;
+}
+
 function buildBoundedPrompt(systemPrompt, historyPrefix, conversationPrompt, maxChars = MAX_UPSTREAM_PROMPT_CHARS, options = {}) {
     const system = String(systemPrompt || '').trim();
     const history = String(historyPrefix || '');
     const conversation = String(conversationPrompt || '').trim();
     const original = system ? `${system}\n\n${history}${conversation}` : `${history}${conversation}`;
-    const safeMax = Math.max(1, Math.floor(Number(maxChars) || MAX_UPSTREAM_PROMPT_CHARS));
+    // A persona is never trimmed to fit. If it is bigger than the cap, the cap grows:
+    // the file is sent whole, with a working minimum of conversation beside it.
+    const personaChars = Math.min(Math.max(0, Math.floor(Number(options.personaChars) || 0)), system.length);
+    const personaFloor = personaChars ? personaChars + MIN_UPSTREAM_PROMPT_CHARS + 2 : 0;
+    const safeMax = Math.max(
+        1,
+        Math.floor(Number(maxChars) || MAX_UPSTREAM_PROMPT_CHARS),
+        Math.min(personaFloor, PERSONA_HARD_MAX + MIN_UPSTREAM_PROMPT_CHARS),
+    );
     if (original.length <= safeMax) {
         return { prompt: original, compacted: false, historyDropped: false, originalChars: original.length, promptChars: original.length };
     }
@@ -3460,6 +3531,10 @@ function buildBoundedPrompt(systemPrompt, historyPrefix, conversationPrompt, max
         ? Math.min(0.85, Math.max(0.2, options.systemShare))
         : (personaSystemPrompt() ? 0.7 : 0.5);
     let systemBudget = system ? Math.floor((safeMax - separatorLength) * systemShare) : 0;
+    if (personaChars) {
+        // At least the persona, and always a working floor of conversation beside it.
+        systemBudget = Math.max(systemBudget, Math.min(personaChars, Math.max(0, safeMax - separatorLength - 2000)));
+    }
     let conversationBudget = Math.max(0, safeMax - separatorLength - systemBudget);
 
     // Give unused capacity from a short side to the other side.
@@ -3472,8 +3547,12 @@ function buildBoundedPrompt(systemPrompt, historyPrefix, conversationPrompt, max
     }
 
     // Preserve the start of the task/system instructions and the most recent
-    // tool loop. The injected tool adapter lives at the end of systemPrompt.
-    const boundedSystem = truncatePromptMiddle(system, systemBudget, 0.35);
+    // tool loop. The injected tool adapter lives at the end of systemPrompt. The
+    // persona slice inside it is copied over untouched.
+    const boundedSystem = boundSystemPrompt(system, systemBudget, {
+        personaStart: options.personaStart,
+        personaChars,
+    });
     const plan = splitConversationBudget(currentConversation, Math.max(2000, conversationBudget - block.length));
     // First task message, then what the dropped middle said, then the live tail.
     let boundedConversation;
@@ -3789,14 +3868,18 @@ function formatMessages(messages, tools, options = {}) {
     // A persona turns a bare chat model into the assistant this proxy is for. It is
     // read from a file you own, so the prompt stays yours and never sits in the repo.
     const persona = options.skipPersona ? '' : personaSystemPrompt();
+    const personaMode = personaConfig().mode;
     if (persona) {
-        systemPrompt = personaConfig().mode === 'replace'
+        systemPrompt = personaMode === 'replace'
             ? `${persona}\n`
             : `${systemPrompt}${persona}\n`;
     }
     systemPrompt += formatToolDefinitions(tools);
     if (options.nativeSearchNotice) systemPrompt += nativeSearchAndThinkNotice();
     if (options.noTools) systemPrompt += noToolsContract();
+    // Appended after everything else, including the persona: the agent has to know
+    // what it is called, and nothing already written is replaced to tell it.
+    systemPrompt += seekIdentityNotice(options.model);
 
     // Build full conversation history for DeepSeek's context
     let conversation = '';
@@ -3821,8 +3904,18 @@ function formatMessages(messages, tools, options = {}) {
             conversation += `[Tool Result]\n${toolContent}\n\n`;
         }
     }
-    // The last user message + full conversation context
-    return { prompt: conversation.trim(), systemPrompt: systemPrompt.trim() };
+    // The last user message + full conversation context. The persona's position is
+    // reported too: the prompt builder keeps that exact slice intact instead of
+    // middle-cutting a rules file in half.
+    const boundedSystem = systemPrompt.trim();
+    const personaStart = persona ? Math.max(0, boundedSystem.indexOf(persona)) : 0;
+    return {
+        prompt: conversation.trim(),
+        systemPrompt: boundedSystem,
+        personaStart,
+        personaChars: persona ? persona.length : 0,
+        personaMode,
+    };
 }
 
 // ─── Persona ────────────────────────────────────────────────────────────────
@@ -3836,19 +3929,41 @@ function resetPersonaCache() { personaCache = null; }
 
 // Read on demand so a changed file needs only a reload, and so tests can point it
 // somewhere else without reloading the module.
+// Where a persona is looked for when DEEPSEEK_PERSONA_FILE is not set. The managed
+// path is first so a file can be dropped in once and survive restarts without env.
+function personaDiscoveryPaths() {
+    return [
+        path.join(os.homedir(), '.freedeepseek-api', 'persona.txt'),
+        path.join(__dirname, 'persona.txt'),
+    ];
+}
+
+function discoverPersonaFile() {
+    for (const candidate of personaDiscoveryPaths()) {
+        try {
+            if (fs.statSync(candidate).size > 0) return candidate;
+        } catch (err) { /* not there */ }
+    }
+    return '';
+}
+
 function personaConfig() {
-    const file = String(process.env.DEEPSEEK_PERSONA_FILE || '').trim();
+    const file = String(process.env.DEEPSEEK_PERSONA_FILE || '').trim() || discoverPersonaFile();
     const inline = String(process.env.DEEPSEEK_PERSONA || '');
-    // A coding-agent rules file is easily 60–100k chars; cutting it at 24k used to
-    // remove most of the persona. The prompt budget still bounds what is sent, but
-    // the file is no longer mangled before it gets there.
-    const max = Math.max(1000, Math.min(200000, Number(process.env.DEEPSEEK_PERSONA_MAX_CHARS) || 64000));
+    // By default the persona is loaded WHOLE. A coding-agent rules file is easily
+    // 60–100k chars and the web endpoint takes it, so the proxy does not shorten it;
+    // set DEEPSEEK_PERSONA_MAX_CHARS only if you want a ceiling.
+    const configuredMax = Number(process.env.DEEPSEEK_PERSONA_MAX_CHARS);
+    const max = Number.isFinite(configuredMax) && configuredMax > 0
+        ? Math.max(1000, Math.min(PERSONA_HARD_MAX, configuredMax))
+        : PERSONA_HARD_MAX;
     return {
         file,
         inline,
         max,
         mode: /^replace$/i.test(String(process.env.DEEPSEEK_PERSONA_MODE || 'append')) ? 'replace' : 'append',
         source: inline.trim() ? 'inline' : (file || null),
+        discovered: !process.env.DEEPSEEK_PERSONA_FILE && Boolean(file),
     };
 }
 
@@ -3856,7 +3971,23 @@ function personaConfig() {
 // and later requests in the same chat carry this reminder instead of the whole file:
 // the model keeps following it, and the prompt budget stays for the work.
 const PERSONA_REMINDER = '[Standing instructions] The persona and every rule you were given at the start of this chat are still in force in full. Keep following them exactly; none of them has expired, been relaxed or been replaced.';
-const personaStats = { full_prompts: 0, reminders: 0 };
+// Hard ceiling only to keep a runaway file from eating the process; not a policy cap.
+const PERSONA_HARD_MAX = 400000;
+const SEEK_PRODUCT_NAME = process.env.SEEK_NAME || 'seek';
+const SEEK_MAKER = process.env.SEEK_MAKER || 'Hyperion';
+
+// One short line, appended after the persona and tool adapter. Without it an agent
+// introduces itself as the bare upstream model, or as whichever harness wrapped it.
+function seekIdentityNotice(model) {
+    const cfg = model ? resolveModelConfig(model) : null;
+    const upstream = cfg?.real_model || 'DeepSeek V4.1 Flash';
+    const flags = [];
+    if (cfg?.thinking_enabled) flags.push('DeepThink on');
+    if (cfg?.search_enabled === false) flags.push('web search off');
+    const suffix = flags.length ? ` (${flags.join(', ')})` : '';
+    return `\n[Identity] You are ${SEEK_PRODUCT_NAME}, a coding assistant made by ${SEEK_MAKER}, reached through a self-hosted gateway to DeepSeek. Your model is ${SEEK_PRODUCT_NAME} running ${upstream}${suffix}. If anyone asks what you are, what model you run, or who made you, answer with exactly that — do not call yourself a generic assistant or name a different vendor's model.\n`;
+}
+const personaStats = { full_prompts: 0, reminders: 0, loaded_chars: 0 };
 
 function personaReminder() {
     return PERSONA_REMINDER;
@@ -3876,6 +4007,7 @@ function personaSystemPrompt() {
         }
     }
     text = String(text || '').trim();
+    personaStats.loaded_chars = text.length;
     if (text.length > cfg.max) {
         console.log(`[DS-API] persona: ${text.length} chars trimmed to ${cfg.max}`);
         text = truncatePromptMiddle(text, cfg.max, 0.7);
@@ -3944,6 +4076,10 @@ function resolveUpstreamPrompt(session, messages, tools, recoveryHistoryPrefix =
         fullSystemPrompt: formatted.systemPrompt,
         fullConversation: formatted.prompt,
         fingerprint,
+        // Where the persona sits inside systemPrompt, so the builder can keep it whole.
+        personaStart: formatted.personaStart,
+        personaChars: formatted.personaChars,
+        personaMode: formatted.personaMode,
         omittedSystem: omitSystem && formatted.systemPrompt.length > 0,
         omittedPriorTurns: remoteLive,
     };
@@ -4034,6 +4170,12 @@ function adminAccountView(account, now = Date.now()) {
         last_error: account.lastError ? { ...account.lastError } : null,
         last_success_at: account.lastSuccessAt || null,
         last_used_at: account.lastUsedAt || null,
+        invalid: account.invalid === true,
+        last_probe: account.lastProbe ? { ...account.lastProbe } : null,
+        probe_latency_ms: account.lastProbe?.latencyMs ?? null,
+        token_state: account.lastProbe
+            ? (account.lastProbe.ok ? 'valid' : (account.lastProbe.kind === 'ratelimit' ? 'rate-limited' : (account.lastProbe.status === 401 ? '401-expired' : account.lastProbe.kind)))
+            : (account.invalid ? '401-expired' : 'unprobed'),
         usage: {
             requests: usage.requests,
             prompt_tokens: usage.prompt_tokens,
@@ -4398,8 +4540,8 @@ function adminRestoreAccount(body) {
     return { restored, result };
 }
 
-const ADMIN_ACCOUNT_ACTIONS = new Set(['disable', 'enable', 'clear-cooldown']);
-const ADMIN_COLLECTION_ACTIONS = new Set(['reload', 'import', 'restore']);
+const ADMIN_ACCOUNT_ACTIONS = new Set(['disable', 'enable', 'clear-cooldown', 'probe', 'refresh']);
+const ADMIN_COLLECTION_ACTIONS = new Set(['reload', 'import', 'restore', 'probe-all']);
 // --- Self-update (Settings → Updates) ---
 let updater = createUpdater({ root: __dirname });
 let updateBusy = false;
@@ -4824,6 +4966,22 @@ async function handleAdminRequest(req, res, url) {
                 });
                 return;
             }
+            if (parts[2] === 'probe-all') {
+                const probed = await Promise.all(accounts.map(async (account) => {
+                    const probe = await authRefresh.probeAccountToken(account);
+                    account.lastProbe = { ...probe, at: Date.now() };
+                    return { id: account.id, name: account.config?.name || account.id, ...probe };
+                }));
+                const now = Date.now();
+                adminJson(res, 200, {
+                    probed,
+                    ok: probed.filter(p => p.ok).length,
+                    failed: probed.filter(p => !p.ok).length,
+                    accounts: accounts.map(a => adminAccountView(a, now)),
+                    pool: adminPoolSummary(now),
+                });
+                return;
+            }
             if (parts[2] === 'restore') {
                 const { restored, result } = adminRestoreAccount(await readAdminJsonBody(req));
                 const now = Date.now();
@@ -4880,6 +5038,35 @@ async function handleAdminRequest(req, res, url) {
             return;
         }
         const action = parts[3];
+        if (action === 'probe') {
+            const probe = await authRefresh.probeAccountToken(account);
+            account.lastProbe = { ...probe, at: Date.now() };
+            if (probe.ok) {
+                account.invalid = false;
+                recordAccountSuccess(account);
+            } else if (probe.kind === 'auth') {
+                account.invalid = true;
+            }
+            const now = Date.now();
+            adminJson(res, 200, { probe, account: adminAccountView(account, now), pool: adminPoolSummary(now) });
+            return;
+        }
+        if (action === 'refresh') {
+            const result = await authRefresh.refreshAccount(account);
+            if (result.ok) {
+                account.cooldownUntil = 0;
+                account.cooldownReason = null;
+                account.invalid = false;
+                recordAccountSuccess(account);
+            }
+            const now = Date.now();
+            adminJson(res, result.ok ? 200 : 502, {
+                refresh: { ok: result.ok, reason: result.reason || '', probe: result.probe || null },
+                account: adminAccountView(account, now),
+                pool: adminPoolSummary(now),
+            });
+            return;
+        }
         if (action === 'disable') {
             account.adminDisabled = true;
         } else if (action === 'enable') {
@@ -5089,6 +5276,10 @@ const server = http.createServer(async (req, res) => {
                 mode: personaConfig().mode,
                 source: personaSystemPrompt() ? personaConfig().source : null,
                 chars: personaSystemPrompt().length,
+                source_chars: personaStats.loaded_chars,
+                // False means the whole file is being sent: no trim, no middle cut.
+                trimmed: personaStats.loaded_chars > personaSystemPrompt().length,
+                discovered: personaConfig().discovered,
                 max_chars: personaConfig().max,
                 // Sent in full once per chat; later turns carry a reminder instead.
                 sent_in_full: personaStats.full_prompts,
@@ -5282,7 +5473,7 @@ const server = http.createServer(async (req, res) => {
             const effectiveTools = effectiveToolsForRequest(rawParams, webAccess);
             const tools = effectiveTools;
             const requestNoToolsMode = isNoToolsRequest(rawParams, effectiveTools);
-            const promptOptions = { nativeSearchNotice: webAccess.nativeSearchNotice, noTools: requestNoToolsMode };
+            const promptOptions = { nativeSearchNotice: webAccess.nativeSearchNotice, noTools: requestNoToolsMode, model: requestedModel };
             logRow.model = requestedModel;
             const remoteAddr = req.socket.remoteAddress || 'unknown';
             const requestedSession = req.headers['x-agent-session'] || params.session || params.user;
@@ -5380,7 +5571,7 @@ const server = http.createServer(async (req, res) => {
                 return;
             }
 
-            const { prompt, systemPrompt } = formatMessages(messages, tools, promptOptions);
+            const { prompt, systemPrompt, personaStart, personaChars } = formatMessages(messages, tools, promptOptions);
             // For usage accounting, count the CLIENT's original input — not the
             // proxy-expanded fullPrompt (system + injected tools + history) — so
             // prompt_tokens reflects what the caller actually sent.
@@ -5431,12 +5622,17 @@ const server = http.createServer(async (req, res) => {
             // Whatever earlier trims already cut out of this upstream chat stays in the prompt
             // as one block, even if this request drops nothing new.
             const priorCompactionSummary = String(session.compactionSummary || '');
+            const personaBuildOptions = {
+                personaStart: resolved.personaStart,
+                personaChars: resolved.personaChars,
+                personaMode: resolved.personaMode,
+            };
             let promptBuild = buildBoundedPrompt(
                 resolved.systemPrompt,
                 historyPrefix,
                 resolved.conversation,
                 MAX_UPSTREAM_PROMPT_CHARS,
-                priorCompactionSummary ? { summary: priorCompactionSummary } : {},
+                priorCompactionSummary ? { ...personaBuildOptions, summary: priorCompactionSummary } : personaBuildOptions,
             );
             // Trimming used to throw the middle of the conversation away. Summarize it on an
             // idle login and put that summary where the turns were; on failure the plain
@@ -5457,14 +5653,20 @@ const server = http.createServer(async (req, res) => {
                         historyPrefix,
                         resolved.conversation,
                         MAX_UPSTREAM_PROMPT_CHARS,
-                        { summary },
+                        { ...personaBuildOptions, summary },
                     );
                     console.log(`${agentTag} Kept a ${summary.length}-char summary of ${droppedChars} dropped chars${priorCompactionSummary ? ' (folded into existing memory)' : ''}.`);
                 }
             }
-            const freshPromptBuild = buildBoundedPrompt(systemPrompt, recoveryHistoryPrefix, prompt);
-            let fullPrompt = pinToolReminder(promptBuild.prompt, tools);
-            const freshPrompt = pinToolReminder(freshPromptBuild.prompt, tools);
+            const freshPromptBuild = buildBoundedPrompt(systemPrompt, recoveryHistoryPrefix, prompt, MAX_UPSTREAM_PROMPT_CHARS, {
+                personaStart,
+                personaChars,
+            });
+            // The tool reminder is appended, never allowed to squeeze the persona out.
+            const personaRoom = resolved.personaChars ? resolved.personaChars + MIN_UPSTREAM_PROMPT_CHARS : 0;
+            const reminderCap = Math.max(MAX_UPSTREAM_PROMPT_CHARS, personaRoom + 4000);
+            let fullPrompt = pinToolReminder(promptBuild.prompt, tools, reminderCap);
+            const freshPrompt = pinToolReminder(freshPromptBuild.prompt, tools, reminderCap);
             let promptCompacted = promptBuild.compacted;
             if (!resolved.omittedSystem) session.sentSystemFingerprint = resolved.fingerprint;
             if (resolved.omittedSystem || resolved.omittedPriorTurns) {
@@ -5605,6 +5807,7 @@ const server = http.createServer(async (req, res) => {
             async function callDeepSeekWithFailover(promptText, recoveryPrompt) {
                 let lastError = null;
                 const failedAccountIds = new Set();
+                const refreshedOnce = new Set();
                 const maxHops = accounts.length + 1;
                 for (let hop = 0; hop < maxHops; hop++) {
                     const hopStarted = Date.now();
@@ -5621,6 +5824,40 @@ const server = http.createServer(async (req, res) => {
                         if (e.status === 429 && !e.accountId) throw e;
                         failedAccountId = e.accountId || (session && session.accountId);
                         lastError = e;
+                        // A 401/40003 is the one failure a refresh can actually fix.
+                        // Do it at most once per login per request, then retry the
+                        // same hop before burning the rest of the pool.
+                        const authFailed = e.accountAuthFailed === true || e.status === 401;
+                        if (authFailed && failedAccountId && !refreshedOnce.has(failedAccountId)) {
+                            refreshedOnce.add(failedAccountId);
+                            const target = accounts.find(a => a.id === failedAccountId);
+                            if (target && target.file && !target.merged) {
+                                console.log(`${agentTag} account ${failedAccountId} rejected its token; attempting a refresh.`);
+                                let refreshed = null;
+                                try {
+                                    refreshed = await authRefresh.refreshAccount(target);
+                                } catch (refreshError) {
+                                    refreshed = { ok: false, reason: refreshError?.message || 'refresh_error' };
+                                }
+                                if (refreshed?.ok) {
+                                    target.cooldownUntil = 0;
+                                    target.cooldownReason = null;
+                                    target.invalid = false;
+                                    target.headers = authHealth.buildHeaders({
+                                        token: authRefresh.cleanToken(target.config?.token),
+                                        cookie: target.config?.cookie || '',
+                                        hif_dliq: target.config?.hif_dliq || '',
+                                        hif_leim: target.config?.hif_leim || '',
+                                    });
+                                    failedAccountIds.delete(failedAccountId);
+                                    lastError = null;
+                                    console.log(`${agentTag} account ${failedAccountId} refreshed via ${refreshed.reason || 'refresh'}; retrying it.`);
+                                    continue;
+                                }
+                                if (target) target.invalid = true;
+                                console.log(`${agentTag} account ${failedAccountId} refresh failed (${refreshed?.reason || 'unknown'}); rotating.`);
+                            }
+                        }
                     }
                     if (failedAccountId) failedAccountIds.add(failedAccountId);
                     if (clientGone || deadlineHit()) throw lastError;

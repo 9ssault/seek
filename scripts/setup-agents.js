@@ -34,21 +34,21 @@ const LEGACY_SEARCH_MODELS = {
 const DEFAULT_MODEL = 'deepseek-v4-flash';
 const CODEX_BASE_INSTRUCTIONS = 'You are a coding agent. Follow developer instructions and use local tools when needed. Local tools are JSON, and several independent calls may be one tool_calls array.';
 const CODEX_NATIVE_SEARCH_INSTRUCTIONS = 'Do not use the Codex/harness web search tool. DeepSeek native Web Search is enabled — use it for live web data and report the findings.';
-// Each variant gets its own name; four identical "DeepSeek 4.1" rows in the picker
-// made search/thinking impossible to pick on purpose.
+// Each variant gets its own name, under the product's own name. A bare upstream model
+// name in the picker made the agent introduce itself as somebody else's model.
 const OPENCODE_MODEL_NAMES = {
-  'deepseek-v4-flash': 'DeepSeek 4.1 Flash + search',
-  'deepseek-v4-flash-thinking': 'DeepSeek 4.1 Flash Thinking + search',
-  'deepseek-v4-flash-nosearch': 'DeepSeek 4.1 Flash',
-  'deepseek-v4-flash-thinking-nosearch': 'DeepSeek 4.1 Flash Thinking',
+  'deepseek-v4-flash': 'seek Flash + web',
+  'deepseek-v4-flash-thinking': 'seek Flash Thinking + web',
+  'deepseek-v4-flash-nosearch': 'seek Flash',
+  'deepseek-v4-flash-thinking-nosearch': 'seek Flash Thinking',
 };
-const OPENCODE_PROVIDER_LABEL = 'Flash';
+const OPENCODE_PROVIDER_LABEL = 'seek';
 // The proxy cuts one upstream prompt to DEEPSEEK_MAX_PROMPT_CHARS characters
-// (80k ≈ 20k tokens) and drops the middle beyond that, so advertising a 1M-token
+// (120k ≈ 30k tokens) and drops the middle beyond that, so advertising a 1M-token
 // window made the agent fill a context that was then silently truncated.
 const HONEST_CONTEXT_TOKENS = Math.max(
   8192,
-  Math.floor((Number(process.env.DEEPSEEK_MAX_PROMPT_CHARS) || 80000) / 4),
+  Math.floor((Number(process.env.DEEPSEEK_MAX_PROMPT_CHARS) || 120000) / 4),
 );
 const AGENT_FILE_MAX_BYTES = 1024 * 1024;
 const BACKUP_ID_RE = /^\d{4}-\d{2}-\d{2}T\d{2}-\d{2}-\d{2}-\d{3}Z(?:-[a-z0-9]{4})?$/;

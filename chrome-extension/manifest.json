@@ -1,11 +1,11 @@
 {
   "manifest_version": 3,
-  "name": "DeepSeek Auth Exporter",
-  "version": "1.6",
-  "description": "Export a DeepSeek Web session for FreeDeepseekAPI — fully automatic Google Sign-In",
+  "name": "seek — DeepSeek auth exporter",
+  "version": "1.7",
+  "description": "Capture a DeepSeek Web session for seek (a self-hosted gateway) — Google sign-in, pool status, duplicate check",
   "browser_specific_settings": {
     "gecko": {
-      "id": "deepseek-auth-exporter@freedeepseekapi",
+      "id": "seek-auth-exporter@9ssault",
       "strict_min_version": "109.0"
     }
   },
@@ -32,8 +32,12 @@
   ],
   "content_scripts": [
     {
-      "matches": ["https://chat.deepseek.com/*"],
-      "js": ["content.js"],
+      "matches": [
+        "https://chat.deepseek.com/*"
+      ],
+      "js": [
+        "content.js"
+      ],
       "run_at": "document_idle"
     }
   ],
@@ -53,6 +57,10 @@
   },
   "oauth2": {
     "client_id": "869304752193-8j300csdj6fi2sot2qaitvarc2qra089.apps.googleusercontent.com",
-    "scopes": ["openid", "email", "profile"]
+    "scopes": [
+      "openid",
+      "email",
+      "profile"
+    ]
   }
 }

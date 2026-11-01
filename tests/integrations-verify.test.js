@@ -47,7 +47,7 @@ test('checkOpencodeConfig accepts the config setup writes', (t) => {
     models: ['deepseek-v4-flash', 'deepseek-v4-flash-thinking', 'deepseek-v4-flash-nosearch', 'deepseek-v4-flash-thinking-nosearch'],
     baseUrl: 'http://127.0.0.1:9655',
     apiKey: 'local',
-    promptChars: 80000,
+    promptChars: 120000,
   });
   assert.deepEqual(verdict.problems, []);
   assert.deepEqual(verdict.notes, []);
@@ -68,7 +68,7 @@ test('checkOpencodeConfig names each defect it can see', () => {
     models: ['deepseek-v4-flash', 'deepseek-v4-flash-thinking'],
     baseUrl: 'http://127.0.0.1:9655',
     apiKey: 'local',
-    promptChars: 80000,
+    promptChars: 120000,
   });
   const text = verdict.problems.join(' | ');
   assert.match(text, /baseURL .* is not the proxy/);

@@ -416,3 +416,18 @@ h1 {
 .toggle:has(input:checked) .toggle-text {
   color: var(--text);
 }
+
+/* Pool chip: how many logins the proxy has right now. */
+.pool {
+  margin-left: auto;
+  align-self: flex-start;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 10px;
+  letter-spacing: 0.3px;
+  padding: 2px 6px;
+  border-radius: 999px;
+  border: 1px solid var(--border, #2a2a30);
+  color: var(--muted, #8b8b93);
+  white-space: nowrap;
+}
+.pool[data-state="on"] { border-color: #2f6f4f; color: #4ade80; }

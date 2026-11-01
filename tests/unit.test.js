@@ -1147,9 +1147,41 @@ test('the persona cap defaults high enough for a real rules file', (t) => {
     else process.env.DEEPSEEK_PERSONA_MAX_CHARS = saved;
   });
   delete process.env.DEEPSEEK_PERSONA_MAX_CHARS;
-  assert.equal(serverInternals.personaConfig().max, 64000);
+  // No cap by default: the file is sent whole.
+  assert.equal(serverInternals.personaConfig().max, 400000);
   process.env.DEEPSEEK_PERSONA_MAX_CHARS = '500000';
-  assert.equal(serverInternals.personaConfig().max, 200000);
+  assert.equal(serverInternals.personaConfig().max, 400000);
+});
+
+test('a persona is sent whole: never trimmed, never middle-cut, additions appended after it', (t) => {
+  const saved = process.env.DEEPSEEK_PERSONA;
+  t.after(() => {
+    if (saved === undefined) delete process.env.DEEPSEEK_PERSONA;
+    else process.env.DEEPSEEK_PERSONA = saved;
+    serverInternals.resetPersonaCache();
+  });
+  // A rules file bigger than the prompt cap: 150k chars of numbered rules.
+  const rules = Array.from({ length: 1500 }, (_, i) => `RULE ${i}: keep this line exactly as written.`).join('\n');
+  process.env.DEEPSEEK_PERSONA = rules;
+  serverInternals.resetPersonaCache();
+
+  const messages = [{ role: 'system', content: 'client instructions' }, { role: 'user', content: 'do the task' }];
+  const formatted = serverInternals.formatMessages(messages, [], {});
+  assert.equal(formatted.personaChars, rules.length);
+  assert.match(formatted.systemPrompt, /RULE 0: keep this line/);
+  assert.match(formatted.systemPrompt, /RULE 1499: keep this line/);
+  // The identity line is added after the persona, not instead of any of it.
+  assert.match(formatted.systemPrompt, /You are seek, a coding assistant made by Hyperion/);
+  assert.ok(formatted.systemPrompt.lastIndexOf('[Identity]') > formatted.systemPrompt.indexOf('RULE 1499'));
+
+  // The prompt cap is a conversation budget, not a licence to cut the persona.
+  const built = serverInternals.buildBoundedPrompt(formatted.systemPrompt, '', 'User: do the task', 120000, {
+    personaStart: formatted.personaStart,
+    personaChars: formatted.personaChars,
+  });
+  assert.ok(built.promptChars >= rules.length, `prompt ${built.promptChars} dropped persona content`);
+  for (const probe of ['RULE 0:', 'RULE 500:', 'RULE 1499:']) assert.match(built.prompt, new RegExp(probe));
+  assert.equal(built.prompt.includes(rules), true, 'the persona must appear verbatim');
 });
 
 test('a loaded persona keeps more of the prompt budget than a bare client system prompt', (t) => {
@@ -1899,13 +1931,13 @@ test('one-click agent setup adds opt-in providers without replacing native defau
   assert.equal(opencode.tools.websearch, false);
   assert.equal(opencode.tools.webfetch, false);
   assert.equal(opencode.permission.websearch, 'deny');
-  assert.equal(opencode.provider.freedeepseek.name, 'Flash');
-  assert.equal(opencode.provider.freedeepseek.models['deepseek-v4-flash'].name, 'DeepSeek 4.1 Flash + search');
+  assert.equal(opencode.provider.freedeepseek.name, 'seek');
+  assert.equal(opencode.provider.freedeepseek.models['deepseek-v4-flash'].name, 'seek Flash + web');
   assert.deepEqual(Object.keys(opencode.provider.freedeepseek.models), ['deepseek-v4-flash', 'deepseek-v4-flash-thinking', 'deepseek-v4-flash-nosearch', 'deepseek-v4-flash-thinking-nosearch']);
-  assert.equal(opencode.provider.freedeepseek.models['deepseek-v4-flash-thinking'].name, 'DeepSeek 4.1 Flash Thinking + search');
-  // The proxy trims one upstream prompt to DEEPSEEK_MAX_PROMPT_CHARS (80k chars),
+  assert.equal(opencode.provider.freedeepseek.models['deepseek-v4-flash-thinking'].name, 'seek Flash Thinking + web');
+  // The proxy trims one upstream prompt to DEEPSEEK_MAX_PROMPT_CHARS (120k chars),
   // so the advertised window is that budget in tokens, not 1M.
-  assert.equal(opencode.provider.freedeepseek.models['deepseek-v4-flash-thinking'].limit.context, 20000);
+  assert.equal(opencode.provider.freedeepseek.models['deepseek-v4-flash-thinking'].limit.context, 30000);
   assert.equal(opencode.provider.freedeepseek.models['deepseek-v4-flash-thinking'].attachment, true);
   assert.deepEqual(opencode.provider.freedeepseek.models['deepseek-v4-flash-thinking'].modalities.input, ['text', 'image']);
   const agentsMd = fs.readFileSync(path.join(dir, '.config', 'opencode', 'AGENTS.md'), 'utf8');

@@ -1,8 +1,10 @@
 <p align="center">
-  <img src="assets/banner.svg" alt="seek — a self-hosted gateway to DeepSeek web" width="100%">
+  <img src="assets/banner.svg" alt="seek — a gateway to DeepSeek web, made by Hyperion" width="100%">
 </p>
 
 # seek
+
+*Made by Hyperion.*
 
 One self-hosted gateway in front of DeepSeek web. It speaks OpenAI chat-completions, Anthropic messages and OpenAI responses, keeps **one upstream chat per conversation**, and spreads requests across a pool of logins so a throttled or dead account does not end the session.
 
@@ -44,6 +46,10 @@ Any OpenAI-compatible client works: base URL `http://127.0.0.1:9655/v1`, key `lo
 - A prompt that has to be trimmed is summarized on an idle login, and that summary is **cumulative** — the session keeps its goal and decisions, not just its newest turn.
 - Memory survives restarts (`~/.freedeepseek-api/memory.json`), and a login is never given two chats at once.
 
+
+## Browser extension
+
+`chrome-extension/` captures a login from the browser you are already signed into: Google sign-in, live header capture, verification against DeepSeek before it is kept, pool status, and a duplicate check so the same login is never added twice. Load it unpacked from `chrome://extensions`, and it fills the pool one login at a time — which is the point.
 
 ## Container
 

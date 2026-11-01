@@ -82,6 +82,7 @@ The image refuses to start without `PROXY_API_KEY_FILE`, and `/readyz` answers `
 | [`docs/agents.md`](docs/agents.md) | One-click setup per agent |
 | [`docs/auth.md`](docs/auth.md) | Auth files, capture, rotation |
 | [`docs/models.md`](docs/models.md) | Model IDs and flags |
+| [`docs/integration.md`](docs/integration.md) | The contract to build against: endpoints, errors, sessions |
 
 ## License
 

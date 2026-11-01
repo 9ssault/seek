@@ -166,7 +166,7 @@
     api(api) {
       return { openai: 'OpenAI chat', anthropic: 'Anthropic messages', responses: 'Responses' }[api] || api || '—';
     },
-    cooldownReason: (r) => ({ rate_limit: 'rate limit', auth: 'auth error' }[r] || r || 'cooldown'),
+    cooldownReason: (r) => ({ rate_limit: 'rate limit', auth: 'auth error', waf: 'WAF token', pow_transient: 'PoW retry' }[r] || r || 'cooldown'),
   };
 
   // ---------------------------------------------------------------- clock

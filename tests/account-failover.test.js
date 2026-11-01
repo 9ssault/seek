@@ -681,6 +681,10 @@ const ACCOUNT_VIEW_KEYS = [
   'busy', 'busy_agent', 'busy_since', 'cooldown_reason', 'cooldown_remaining_sec', 'cooldown_until',
   'credentials', 'disabled_by', 'email', 'enabled', 'failures', 'id', 'last_error', 'last_success_at',
   'last_used_at', 'name', 'status', 'total_failures', 'usage',
+  'invalid', 'last_probe', 'probe_latency_ms', 'token_state',
+  // A login that lives inside a merged auth file, its pool role, and whether the token
+  // needs a fresh capture. The dashboard uses all three.
+  'merged', 'role', 'needs_auth',
 ].sort();
 
 test('GET /admin/accounts reports every account state without leaking credentials or file paths', async (t) => {
@@ -1135,9 +1139,17 @@ test('POST /admin/accounts/import writes a 0600 auth file into the accounts dir 
   if (process.platform !== 'win32') assert.equal(fs.statSync(file).mode & 0o777, 0o600);
   assert.deepEqual(S.accounts.map(a => a.id).sort(), ['first', 'work-main']);
 
-  res = await request(port, 'POST', '/admin/accounts/import', { body: { name: 'Work Main', auth: { token: 'tok-other', cookie: 'b=2' } } });
-  assert.equal(res.status, 409, res.text);
-  assert.equal(res.json.error.type, 'account_exists');
+  // Re-capturing the same login with a new token replaces the stored session in place:
+  // that is how a rejected login is repaired, and it must not create a second entry for
+  // one account (two live sessions on one login is what gets it banned).
+  res = await request(port, 'POST', '/admin/accounts/import', { body: { name: 'Work Main', auth: { token: 'tok-fresh-SECRET', cookie: 'b=2' } } });
+  assert.equal(res.status, 200, res.text);
+  assert.equal(res.json.replaced, true);
+  assert.equal(res.json.account.id, 'work-main');
+  assert.equal(JSON.parse(fs.readFileSync(file, 'utf8')).token, 'tok-fresh-SECRET');
+  assert.deepEqual(S.accounts.map(a => a.id).sort(), ['first', 'work-main'], 'no duplicate entry for one login');
+  // Restore the token the rest of this test asserts on.
+  await request(port, 'POST', '/admin/accounts/import', { body: { name: 'Work Main', auth: exported } });
 
   res = await request(port, 'POST', '/admin/accounts/import', { body: { name: 'Again', auth: exported } });
   assert.equal(res.status, 409, res.text);
@@ -1842,7 +1854,12 @@ test('audit srv-accounts-2: a business auth code on HTTP 200 cools the account a
   const first = await chat(port, 'audit-auth-code', [{ role: 'user', content: 'hi' }]);
   assert.notEqual(first.status, 500, first.text);
   assert.ok(A.cooldownUntil > Date.now(), 'the dead login must be cooled down');
-  assert.equal(A.cooldownReason, 'auth');
+  // A biz code saying the token is invalid is a verdict, not a blip: it is marked
+  // needs_auth so no later request wastes a hop on it. Only a fresh capture or a passing
+  // probe puts it back.
+  assert.equal(A.cooldownReason, 'auth_expired');
+  assert.equal(A.invalid, true);
+  assert.equal(S.accountCanServe(A, Date.now()), false, 'a rejected login is not selectable');
 
   const second = await chat(port, 'audit-auth-code', [{ role: 'user', content: 'hi again' }]);
   assert.equal(second.status, 200, second.text);
@@ -2213,3 +2230,42 @@ test('audit srv-accounts-3: a request queued on an account lock does not use tha
   assert.equal(byPath(calls, COMPLETION, 'X').length, 1, 'X was rate-limited by the first request; the queued request must not call it again');
   assert.equal(byPath(calls, POW, 'X').length, 1, 'no PoW challenge may be requested on the cooling account');
 });
+
+test('universal failover: an HTTP 401 or business code 40003 rotates in-flight to Account B in the same request', async (t) => {
+  const A = acct('A');
+  const B = acct('B');
+  useAccounts(t, [A, B]);
+  installUpstream(t, {
+    completion: {
+      A: [() => jsonResp({ code: 40003, msg: 'Authorization Failed (invalid token)', data: null })],
+      B: [() => sse(okSse('served by B after 401 failover'))],
+    },
+  });
+  t.after(() => { S.sessions.delete('failover-401-agent'); });
+  const port = await startServer(t);
+
+  const res = await chat(port, 'failover-401-agent', [{ role: 'user', content: 'test 401 failover' }]);
+  assert.equal(res.status, 200, `first request must succeed on B: ${res.text}`);
+  assert.equal(res.headers['x-account-id'], 'B');
+  assert.equal(res.json?.choices?.[0]?.message?.content, 'served by B after 401 failover');
+});
+
+test('universal failover: an HTTP 500 error on completion rotates in-flight to Account B in the same request', async (t) => {
+  const A = acct('A');
+  const B = acct('B');
+  useAccounts(t, [A, B]);
+  installUpstream(t, {
+    completion: {
+      A: [() => jsonResp({ code: 500, msg: 'Internal server error', data: null }, 500)],
+      B: [() => sse(okSse('served by B after 500 failover'))],
+    },
+  });
+  t.after(() => { S.sessions.delete('failover-500-agent'); });
+  const port = await startServer(t);
+
+  const res = await chat(port, 'failover-500-agent', [{ role: 'user', content: 'test 500 failover' }]);
+  assert.equal(res.status, 200, `first request must succeed on B: ${res.text}`);
+  assert.equal(res.headers['x-account-id'], 'B');
+  assert.equal(res.json?.choices?.[0]?.message?.content, 'served by B after 500 failover');
+});
+

@@ -6,6 +6,9 @@ const path = require('node:path');
 const { spawnSync } = require('node:child_process');
 
 const ROOT = path.resolve(__dirname, '..');
+// The repo ships a default agent spec, so a bare prompt has to be requested explicitly.
+// Tests that want a persona set DEEPSEEK_PERSONA/DEEPSEEK_PERSONA_FILE themselves.
+process.env.SEEK_NO_PERSONA = '1';
 const serverInternals = require('../server.js').__test;
 
 function tmpdir() {
@@ -266,7 +269,7 @@ test('Containerfile keeps the rootless Podman runtime minimal and fail-closed', 
   assert.deepEqual(copyLines, [
     'COPY --chown=1000:1000 package.json server.js ./',
     // server.js requires lib/updater.js; the image still has no .git, so it reports updates as unavailable.
-    'COPY --chown=1000:1000 lib/pow.js lib/updater.js ./lib/',
+    'COPY --chown=1000:1000 lib/auth-health.js lib/auth-refresh.js lib/pow.js lib/updater.js ./lib/',
     'COPY --chown=1000:1000 scripts/lib/tui-menu.js ./scripts/lib/tui-menu.js',
     'COPY --chown=1000:1000 public/dashboard/index.html public/dashboard/*.css public/dashboard/*.js public/dashboard/*.png public/dashboard/*.jpg public/dashboard/*.woff2 public/dashboard/GEIST-LICENSE.txt ./public/dashboard/',
   ]);
@@ -335,7 +338,7 @@ test('loopback host detection covers supported local bind addresses', () => {
   assert.equal(serverInternals.isLoopbackHost('0.0.0.0'), false);
 });
 
-test('browser origin guard allows local UIs and exact configured origins only', () => {
+test('browser origin guard allows local UIs, all browser extensions, and exact configured origins only', () => {
   const allowed = new Set(['https://ui.example.com', 'chrome-extension://trusted-id']);
   assert.equal(serverInternals.isBrowserOriginAllowed(undefined, allowed), true);
   assert.equal(serverInternals.isBrowserOriginAllowed('http://localhost:3000', allowed), true);
@@ -344,7 +347,9 @@ test('browser origin guard allows local UIs and exact configured origins only', 
   assert.equal(serverInternals.isBrowserOriginAllowed('https://ui.example.com/path', allowed), true);
   assert.equal(serverInternals.isBrowserOriginAllowed('chrome-extension://trusted-id', allowed), true);
   assert.equal(serverInternals.isBrowserOriginAllowed('https://evil.example', allowed), false);
-  assert.equal(serverInternals.isBrowserOriginAllowed('chrome-extension://other-id', allowed), false);
+  // Browser extensions are local installs (not a CSRF / DNS-rebinding vector), so all are allowed.
+  assert.equal(serverInternals.isBrowserOriginAllowed('chrome-extension://other-id', allowed), true);
+  assert.equal(serverInternals.isBrowserOriginAllowed('moz-extension://some-id', allowed), true);
   assert.equal(serverInternals.isBrowserOriginAllowed('null', allowed), false);
 });
 
@@ -804,6 +809,554 @@ test('sticky continuation omits system even when the client restates new instruc
   assert.equal(next.systemPrompt, '');
   assert.match(next.conversation, /follow up/);
   assert.doesNotMatch(next.conversation, /\bhello\b/);
+});
+
+test('one auth file can hold every login and mark one orchestrator', () => {
+  const entries = serverInternals.expandAuthFile('/tmp/auth.json', {
+    orchestrator: 'brain',
+    accounts: [
+      { name: 'brain', token: 't1', cookie: 'c1' },
+      { name: 'worker', token: 't2', cookie: 'c2' },
+    ],
+  });
+  assert.equal(entries.length, 2);
+  assert.equal(entries[0].role, 'orchestrator');
+  assert.equal(entries[1].role, 'worker');
+  assert.equal(entries[0].merged, true);
+  assert.match(entries[1].key, /worker$/);
+
+  // A single-object file is still exactly one login.
+  const single = serverInternals.expandAuthFile('/tmp/b.json', { token: 't', cookie: 'c' });
+  assert.equal(single.length, 1);
+  assert.equal(single[0].role, 'worker');
+  assert.equal(single[0].merged, false);
+
+  // A bare array works too, and a repeated name is refused instead of silently merged.
+  assert.equal(serverInternals.expandAuthFile('/tmp/c.json', [{ name: 'a', token: '1' }, { name: 'b', token: '2' }]).length, 2);
+  assert.throws(
+    () => serverInternals.expandAuthFile('/tmp/d.json', { accounts: [{ name: 'x', token: 'a' }, { name: 'x', token: 'b' }] }),
+    /duplicate account name/,
+  );
+});
+
+test('a login is never loaded twice and the orchestrator stays out of chat rotation', () => {
+  const built = serverInternals.buildAccountsList([
+    { file: '/tmp/auth.json', key: '/tmp/auth.json#brain', label: 'brain', role: 'orchestrator', merged: true, config: { token: 't1', cookie: 'c1' } },
+    { file: '/tmp/auth.json', key: '/tmp/auth.json#worker', label: 'worker', role: 'worker', merged: true, config: { token: 't2', cookie: 'c2' } },
+    { file: '/accounts/worker.json', key: '/accounts/worker.json', label: null, config: { token: 't2', cookie: 'c2' } },
+  ], []);
+  assert.deepEqual(built.list.map(a => a.id).sort(), ['brain', 'worker']);
+  assert.equal(built.duplicates.length, 1, 'the same token must not enter the pool twice');
+
+  const saved = serverInternals.accounts.slice();
+  serverInternals.accounts.splice(0, serverInternals.accounts.length, ...built.list);
+  try {
+    const picked = serverInternals.selectAccountForSession(serverInternals.createSession(), null, null);
+    assert.equal(picked.role, 'worker', 'a chat must not take the orchestrator while a worker is free');
+    // Last login standing: it serves instead of failing the request.
+    serverInternals.accounts.splice(1, 1);
+    const alone = serverInternals.selectAccountForSession(serverInternals.createSession(), null, null);
+    assert.equal(alone.id, 'brain');
+  } finally {
+    serverInternals.accounts.splice(0, serverInternals.accounts.length, ...saved);
+  }
+});
+
+test('a login with its own auth file beats a stale merged copy of the same login', () => {
+  // The merged file was written first and still holds the old token for the same login.
+  // Keeping the merged entry would pin the pool to a token that a re-capture has already
+  // replaced, and would leave that login unrefreshable and undeletable.
+  const built = serverInternals.buildAccountsList([
+    { file: '/auth/deepseek-auth.json', key: '/auth/deepseek-auth.json#work', label: 'work', merged: true, config: { name: 'work', token: 'old-token', cookie: 'c=1' } },
+    { file: '/auth/accounts/work.json', key: '/auth/accounts/work.json', label: null, merged: false, config: { name: 'work', token: 'new-token', cookie: 'c=2' } },
+  ], []);
+  assert.deepEqual(built.list.map(a => a.id), ['work']);
+  assert.equal(built.list[0].config.token, 'new-token', 'the fresh capture wins');
+  assert.equal(built.list[0].merged, false, 'the surviving copy is the one that can be refreshed and deleted');
+  assert.equal(built.duplicates.length, 1);
+});
+
+test('a login can be removed from a merged auth file without touching its siblings', (t) => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'fdsapi-merged-'));
+  t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+  const file = path.join(dir, 'deepseek-auth.json');
+  fs.writeFileSync(file, JSON.stringify({
+    orchestrator: 'brain',
+    accounts: [
+      { name: 'brain', token: 'tok-brain', cookie: 'b=1' },
+      { name: 'dead', token: 'tok-dead', cookie: 'd=1' },
+      { name: 'worker', token: 'tok-worker', cookie: 'w=1' },
+    ],
+  }));
+
+  const changed = serverInternals.stripLoginFromMergedFile(file, { label: 'dead', token: 'tok-dead' });
+  assert.equal(changed, true);
+  const after = JSON.parse(fs.readFileSync(file, 'utf8'));
+  assert.deepEqual(after.accounts.map(a => a.name), ['brain', 'worker']);
+  assert.equal(after.orchestrator, 'brain', 'the file keeps its shape');
+  assert.equal(serverInternals.stripLoginFromMergedFile(file, { label: 'dead', token: 'tok-dead' }), false,
+    'a second removal is a no-op, not a rewrite');
+});
+
+test('a persona file becomes the system prompt chat requests are answered with', (t) => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'fdsapi-persona-'));
+  t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+  const file = path.join(dir, 'persona.txt');
+  fs.writeFileSync(file, 'You are NEST. Ship the build, never ask permission for an obvious request.');
+  const saved = { ...process.env };
+  t.after(() => {
+    for (const key of ['DEEPSEEK_PERSONA_FILE', 'DEEPSEEK_PERSONA', 'DEEPSEEK_PERSONA_MODE']) {
+      if (saved[key] === undefined) delete process.env[key];
+      else process.env[key] = saved[key];
+    }
+    serverInternals.resetPersonaCache();
+  });
+
+  process.env.DEEPSEEK_PERSONA_FILE = file;
+  delete process.env.DEEPSEEK_PERSONA;
+  delete process.env.DEEPSEEK_PERSONA_MODE;
+  serverInternals.resetPersonaCache();
+
+  const appended = serverInternals.formatMessages(
+    [{ role: 'system', content: 'You are opencode' }, { role: 'user', content: 'hi' }],
+    [],
+  );
+  assert.match(appended.systemPrompt, /You are opencode/);
+  assert.match(appended.systemPrompt, /You are NEST/);
+  assert.ok(appended.systemPrompt.indexOf('You are opencode') < appended.systemPrompt.indexOf('You are NEST'));
+
+  process.env.DEEPSEEK_PERSONA_MODE = 'replace';
+  serverInternals.resetPersonaCache();
+  const replaced = serverInternals.formatMessages(
+    [{ role: 'system', content: 'You are opencode' }, { role: 'user', content: 'hi' }],
+    [],
+  );
+  assert.match(replaced.systemPrompt, /You are NEST/);
+  assert.doesNotMatch(replaced.systemPrompt, /You are opencode/);
+
+  // An unreadable file is not fatal: the request is answered as if no persona was set.
+  process.env.DEEPSEEK_PERSONA_FILE = path.join(dir, 'missing.txt');
+  serverInternals.resetPersonaCache();
+  assert.equal(serverInternals.personaSystemPrompt(), '');
+  delete process.env.DEEPSEEK_PERSONA_FILE;
+  serverInternals.resetPersonaCache();
+  assert.equal(serverInternals.personaSystemPrompt(), '');
+});
+
+test('inline persona wins over the file and is capped', (t) => {
+  const saved = process.env.DEEPSEEK_PERSONA;
+  t.after(() => {
+    if (saved === undefined) delete process.env.DEEPSEEK_PERSONA;
+    else process.env.DEEPSEEK_PERSONA = saved;
+    delete process.env.DEEPSEEK_PERSONA_MAX_CHARS;
+    serverInternals.resetPersonaCache();
+  });
+  process.env.DEEPSEEK_PERSONA = 'INLINE PERSONA';
+  process.env.DEEPSEEK_PERSONA_FILE = '/nonexistent/should-not-be-read';
+  process.env.DEEPSEEK_PERSONA_MAX_CHARS = '1000';
+  serverInternals.resetPersonaCache();
+  const text = serverInternals.personaSystemPrompt();
+  assert.equal(text, 'INLINE PERSONA');
+  delete process.env.DEEPSEEK_PERSONA_FILE;
+
+  process.env.DEEPSEEK_PERSONA = `START ${'x'.repeat(4000)} END`;
+  serverInternals.resetPersonaCache();
+  const capped = serverInternals.personaSystemPrompt();
+  assert.ok(capped.length <= 1000, `persona ${capped.length} exceeded the cap`);
+  assert.match(capped, /START/);
+});
+
+test('compaction reports what it dropped instead of losing it silently', () => {
+  const conversation = [
+    'User: port the auth flow\n\n',
+    'Assistant: reading the files\n\n',
+    `[Tool Result]\n${'x'.repeat(3000)}\n\n`,
+    'Assistant: found the bug\n\n',
+    'User: keep going\n\n',
+  ].join('');
+  const plan = serverInternals.splitConversationBudget(conversation, 1200);
+  assert.ok(plan.dropped.length > 0, 'the middle must be reported as dropped');
+  assert.ok(plan.joined.length <= 1200);
+  assert.match(plan.joined, /port the auth flow/, 'the original task stays');
+  assert.match(plan.joined, /keep going/, 'the newest turn stays');
+  assert.doesNotMatch(plan.dropped.join(''), /port the auth flow/);
+
+  // Nothing to drop when it fits.
+  const fits = serverInternals.splitConversationBudget('User: hi\n\n', 1000);
+  assert.deepEqual(fits.dropped, []);
+  assert.equal(fits.joined, 'User: hi\n\n');
+});
+
+test('a summary replaces the dropped middle and keeps the prompt within its cap', () => {
+  const system = 'You are opencode.'.repeat(200);
+  const conversation = [
+    'User: port the auth flow to the new client\n\n',
+    `[Tool Result]\n${'y'.repeat(4000)}\n\n`,
+    'Assistant: the token refresh is the failing piece\n\n',
+    'User: continue\n\n',
+  ].join('');
+  const cap = 3000;
+  const plain = serverInternals.buildBoundedPrompt(system, '', conversation, cap);
+  assert.equal(plain.compacted, true);
+  assert.ok(plain.droppedChars > 0);
+  assert.equal(plain.summarized, false);
+
+  const withSummary = serverInternals.buildBoundedPrompt(system, '', conversation, cap, {
+    summary: 'The user wants the auth flow ported. The token refresh is failing; the client change is pending.',
+  });
+  assert.equal(withSummary.summarized, true);
+  assert.ok(withSummary.prompt.length <= cap, `prompt ${withSummary.prompt.length} exceeded ${cap}`);
+  assert.match(withSummary.prompt, /Earlier in this conversation/);
+  assert.match(withSummary.prompt, /token refresh is failing/);
+  assert.match(withSummary.prompt, /port the auth flow/);
+  assert.match(withSummary.prompt, /continue/);
+  assert.doesNotMatch(withSummary.prompt, /y{200}/, 'the dropped bulk stays dropped');
+});
+
+test('summaries are validated, capped and cached by content', () => {
+  assert.equal(serverInternals.sanitizeSummary('too short'), '');
+  assert.equal(serverInternals.sanitizeSummary(''), '');
+  const fenced = '```\nThe task is a port. Files: lib/auth-health.js. Error: 40003 on refresh; fixed by re-capturing.\n```';
+  const clean = serverInternals.sanitizeSummary(fenced);
+  assert.doesNotMatch(clean, /```/);
+  assert.match(clean, /40003 on refresh/);
+  const long = serverInternals.sanitizeSummary('word '.repeat(4000));
+  assert.ok(long.length <= 6000);
+  assert.equal(serverInternals.summaryCacheKey('abc'), serverInternals.summaryCacheKey('abc'));
+  assert.notEqual(serverInternals.summaryCacheKey('abc'), serverInternals.summaryCacheKey('abd'));
+});
+
+test('recovery history carries the rolling summary ahead of the raw turns', () => {
+  const prefix = serverInternals.buildRecoveryHistoryPrefix(
+    [{ user: 'and the tests', assistant: 'done' }],
+    'Ported the auth flow; refresh fixed.',
+  );
+  assert.match(prefix, /What happened earlier: summarized/);
+  assert.match(prefix, /Ported the auth flow/);
+  assert.match(prefix, /Previous conversation/);
+  assert.match(prefix, /and the tests/);
+  assert.equal(serverInternals.buildRecoveryHistoryPrefix([], ''), '');
+  assert.match(serverInternals.buildRecoveryHistoryPrefix([], 'only a summary'), /only a summary/);
+});
+
+test('durable memory keeps summaries and recent turns, never the dead remote chat', () => {
+  const id = 'memory-test-agent';
+  const session = serverInternals.createSession();
+  session.id = 'remote-chat-1';
+  session.accountId = 'acct-1';
+  session.parentMessageId = 'msg-1';
+  session.summary = 'Did the parser work.';
+  session.history.push({ user: 'hello', assistant: 'hi' });
+  serverInternals.sessions.set(id, session);
+  try {
+    const record = serverInternals.memoryRecord();
+    assert.equal(record.version, 1);
+    assert.equal(record.agents[id].summary, 'Did the parser work.');
+    assert.deepEqual(record.agents[id].history, [{ user: 'hello', assistant: 'hi' }]);
+    assert.equal(record.agents[id].id, undefined);
+    assert.equal(record.agents[id].accountId, undefined);
+    assert.equal(record.agents[id].parentMessageId, undefined);
+  } finally {
+    serverInternals.sessions.delete(id);
+  }
+  // An empty session is not worth a line on disk.
+  serverInternals.sessions.set('memory-test-empty', serverInternals.createSession());
+  try {
+    assert.equal(serverInternals.memoryRecord().agents['memory-test-empty'], undefined);
+  } finally {
+    serverInternals.sessions.delete('memory-test-empty');
+  }
+});
+
+test('a toolless continuation reaches the bounder whole, so its cut middle can be summarized', () => {
+  const session = serverInternals.createSession();
+  session.id = 'remote-chat-1';
+  session.sentSystemFingerprint = 'fp';
+  const resolved = serverInternals.resolveUpstreamPrompt(
+    session,
+    [{ role: 'user', content: 'x'.repeat(200000) }],
+    [],
+    '',
+    { noTools: true },
+  );
+  assert.equal(resolved.omittedSystem, true);
+  assert.match(resolved.conversation, /NO-TOOLS CONTRACT/);
+  // Bounding is buildBoundedPrompt's job; fitting here used to middle-cut the turn
+  // before compaction could see what it dropped.
+  assert.ok(resolved.conversation.length > 200000, `conversation was pre-cut to ${resolved.conversation.length}`);
+  const built = serverInternals.buildBoundedPrompt(resolved.systemPrompt, '', resolved.conversation, 120000);
+  assert.equal(built.compacted, true);
+  assert.ok(built.droppedChars > 1000);
+});
+
+test('one oversized turn keeps its head and tail, and its cut middle is reported for a summary', () => {
+  let body = 'Repository listing. Files:\n';
+  for (let i = 0; i < 2500; i++) body += `- src/auth/module-${i}.js: token rotation step ${i}\n`;
+  const conversation = `User: ${body}FINAL-REQUEST: reply with just OK.\n\n`;
+
+  const plan = serverInternals.splitConversationBudget(conversation, 80000);
+  assert.equal(plan.singleTurn, true);
+  const dropped = plan.dropped.join('');
+  assert.ok(dropped.length > 1000, 'the middle that gets cut must be reported, not silently lost');
+  assert.ok(conversation.includes(dropped));
+
+  const built = serverInternals.buildBoundedPrompt('sys', '', conversation, 80000, {
+    summary: 'GOAL: refactor auth. FILES: src/auth/*.js. OPEN: run the tests.',
+  });
+  assert.equal(built.compacted, true);
+  assert.ok(built.droppedChars >= 1000);
+  assert.ok(built.prompt.length <= 80000);
+  assert.match(built.prompt, /^sys/);
+  assert.match(built.prompt, /GOAL: refactor auth/, 'the summary sits where the cut content was');
+  assert.match(built.prompt, /FINAL-REQUEST: reply with just OK\.$/, 'the live end of the turn survives');
+});
+
+test('"keep going" is read as a continuation instruction in several languages', () => {
+  for (const text of ['keep going', 'Keep going.', 'continue', 'go on', 'carry on', 'proceed', 'go ahead', 'do it', 'finish it', "don't stop", 'next', 'and then?', 'продолжай', '继续', 'weiter']) {
+    assert.equal(serverInternals.isContinuationPrompt(text), true, `${text} should count as a continuation`);
+  }
+  for (const text of ['keep going and also fix the tests', 'what is the auth flow?', '', 'go on forever about the design of this system']) {
+    assert.equal(serverInternals.isContinuationPrompt(text), false, `${text} is a real request`);
+  }
+  assert.match(serverInternals.CONTINUATION_DIRECTIVE, /Do not ask what to do/);
+  assert.match(serverInternals.CONTINUATION_DIRECTIVE, /Resume the unfinished work/);
+});
+
+test('a continuation with no matching words falls back to the most recent work', (t) => {
+  const older = serverInternals.createSession();
+  older.summary = 'GOAL: older auth work.';
+  older.lastActivityAt = Date.now() - 60000;
+  const newer = serverInternals.createSession();
+  newer.summary = 'GOAL: port the parser in crawl.rs. OPEN: run the bench.';
+  newer.lastActivityAt = Date.now();
+  serverInternals.sessions.set('recall-old', older);
+  serverInternals.sessions.set('recall-new', newer);
+  t.after(() => { serverInternals.sessions.delete('recall-old'); serverInternals.sessions.delete('recall-new'); });
+
+  const fresh = serverInternals.createSession();
+  const messages = [{ role: 'user', content: 'keep going' }];
+  // Without the continuation flag, "keep going" matches nothing and recall stays silent.
+  assert.equal(serverInternals.recallBlock(fresh, messages), '');
+  const withFlag = serverInternals.recallBlock(fresh, messages, '', { allowUnrelated: true });
+  assert.match(withFlag, /most recently working on/);
+  assert.match(withFlag, /crawl\.rs/);
+});
+
+test('a new conversation recalls only relevant earlier work, and nothing else', (t) => {
+  const mk = (id, summary) => {
+    const s = serverInternals.createSession();
+    s.summary = summary;
+    s.lastActivityAt = Date.now();
+    serverInternals.sessions.set(id, s);
+    return s;
+  };
+  mk('old-auth-work', 'GOAL: fix auth-health.js token probe. OPEN: rerun ratelimit_check.');
+  mk('old-rust-work', 'GOAL: rewrite the rayon thread pool in crawl.rs. OPEN: bench it.');
+  t.after(() => { serverInternals.sessions.delete('old-auth-work'); serverInternals.sessions.delete('old-rust-work'); });
+
+  const fresh = serverInternals.createSession();
+  const matched = serverInternals.recallBlock(fresh, [{ role: 'user', content: 'continue the auth-health.js token probe' }]);
+  assert.match(matched, /From earlier conversations on this machine/);
+  assert.match(matched, /auth-health\.js/);
+  assert.doesNotMatch(matched, /rayon/);
+
+  // Unrelated work is not forced in.
+  const unrelated = serverInternals.recallBlock(fresh, [{ role: 'user', content: 'write a haiku about the sea' }]);
+  assert.equal(unrelated, '');
+
+  // An established conversation never gets a recall block: it has its own memory.
+  const busy = serverInternals.createSession();
+  busy.id = 'live-chat';
+  busy.history.push({ user: 'a', assistant: 'b' });
+  assert.equal(serverInternals.recallBlock(busy, [{ role: 'user', content: 'auth-health.js token probe' }]), '');
+});
+
+test('a compaction summary is cumulative memory: persisted, then cleared when the transcript is replaced', (t) => {
+  const id = 'compaction-memory-agent';
+  const session = serverInternals.createSession();
+  assert.equal(session.compactionSummary, '');
+  session.compactionSummary = 'GOAL: port the auth flow. OPEN: write the test.';
+  serverInternals.sessions.set(id, session);
+  t.after(() => serverInternals.sessions.delete(id));
+
+  const record = serverInternals.memoryRecord();
+  assert.equal(record.agents[id].compactionSummary, 'GOAL: port the auth flow. OPEN: write the test.');
+
+  // Editing a message drops the turn the memory describes; keeping it would put the
+  // replaced content back into the next prompt.
+  serverInternals.resetAgentSession(id, { dropHistory: true });
+  assert.equal(serverInternals.sessions.get(id).compactionSummary, '');
+});
+
+test('the summarizer is asked for structured memory and folds in what it already had', () => {
+  const first = serverInternals.summaryInstruction('User: port the auth flow');
+  for (const heading of ['GOAL:', 'DECIDED:', 'FILES:', 'ERRORS:', 'OPEN:']) {
+    assert.match(first, new RegExp(heading), `missing ${heading}`);
+  }
+  assert.doesNotMatch(first, /Already summarized earlier/);
+
+  const folded = serverInternals.summaryInstruction('User: and fix the refresh', {
+    previous: 'GOAL: port the auth flow. FAILED: 40003 on refresh.',
+  });
+  assert.match(folded, /Already summarized earlier/);
+  assert.match(folded, /40003 on refresh/);
+  assert.match(folded, /and fix the refresh/);
+  // A bigger block may use more words, up to a hard ceiling.
+  const wordsIn = (instruction) => Number(instruction.match(/at most (\d+) words/)[1]);
+  assert.ok(wordsIn(serverInternals.summaryInstruction('x', { maxChars: 2200 })) > wordsIn(serverInternals.summaryInstruction('x', { maxChars: 600 })));
+  assert.ok(wordsIn(serverInternals.summaryInstruction('x', { maxChars: 60000 })) <= 450);
+});
+
+test('a persona is sent in full once, then continuations carry only a reminder', (t) => {
+  const saved = process.env.DEEPSEEK_PERSONA;
+  t.after(() => {
+    if (saved === undefined) delete process.env.DEEPSEEK_PERSONA;
+    else process.env.DEEPSEEK_PERSONA = saved;
+    serverInternals.resetPersonaCache();
+  });
+  process.env.DEEPSEEK_PERSONA = 'RULES: always answer in one line and never restate the plan.';
+  serverInternals.resetPersonaCache();
+
+  const session = serverInternals.createSession();
+  const messages = [
+    { role: 'system', content: 'client system prompt' },
+    { role: 'user', content: 'first' },
+  ];
+  const first = serverInternals.resolveUpstreamPrompt(session, messages, []);
+  assert.match(first.systemPrompt, /always answer in one line/);
+
+  // From now on the upstream chat holds the persona; the next turn must not resend it.
+  session.id = 'remote-chat-persona';
+  session.sentSystemFingerprint = first.fingerprint;
+  const next = serverInternals.resolveUpstreamPrompt(session, [
+    ...messages,
+    { role: 'assistant', content: 'ok' },
+    { role: 'user', content: 'second' },
+  ], []);
+  assert.equal(next.systemPrompt, '');
+  assert.match(next.conversation, /Standing instructions/);
+  assert.doesNotMatch(next.conversation, /always answer in one line/);
+  assert.match(next.conversation, /second/);
+});
+
+test('the persona cap defaults high enough for a real rules file', (t) => {
+  const saved = process.env.DEEPSEEK_PERSONA_MAX_CHARS;
+  t.after(() => {
+    if (saved === undefined) delete process.env.DEEPSEEK_PERSONA_MAX_CHARS;
+    else process.env.DEEPSEEK_PERSONA_MAX_CHARS = saved;
+  });
+  delete process.env.DEEPSEEK_PERSONA_MAX_CHARS;
+  // No cap by default: the file is sent whole.
+  assert.equal(serverInternals.personaConfig().max, 400000);
+  process.env.DEEPSEEK_PERSONA_MAX_CHARS = '500000';
+  assert.equal(serverInternals.personaConfig().max, 400000);
+});
+
+test('a persona is sent whole: never trimmed, never middle-cut, additions appended after it', (t) => {
+  const saved = process.env.DEEPSEEK_PERSONA;
+  t.after(() => {
+    if (saved === undefined) delete process.env.DEEPSEEK_PERSONA;
+    else process.env.DEEPSEEK_PERSONA = saved;
+    serverInternals.resetPersonaCache();
+  });
+  // A rules file bigger than the prompt cap: 150k chars of numbered rules.
+  const rules = Array.from({ length: 1500 }, (_, i) => `RULE ${i}: keep this line exactly as written.`).join('\n');
+  process.env.DEEPSEEK_PERSONA = rules;
+  serverInternals.resetPersonaCache();
+
+  const messages = [{ role: 'system', content: 'client instructions' }, { role: 'user', content: 'do the task' }];
+  const formatted = serverInternals.formatMessages(messages, [], {});
+  assert.equal(formatted.personaChars, rules.length);
+  assert.match(formatted.systemPrompt, /RULE 0: keep this line/);
+  assert.match(formatted.systemPrompt, /RULE 1499: keep this line/);
+  // The runtime notice is added after the persona, not instead of any of it, and it must
+  // not claim a second identity: a "you are seek" line next to a persona makes the model
+  // reject both and start negotiating instead of working.
+  assert.match(formatted.systemPrompt, /You are running on seek, a self-hosted gateway to DeepSeek, made by Hyperion/);
+  assert.match(formatted.systemPrompt, /not your identity: the persona and rules above define who you are/);
+  assert.doesNotMatch(formatted.systemPrompt, /\[Identity\] You are seek/);
+  assert.ok(formatted.systemPrompt.lastIndexOf('[Gateway]') > formatted.systemPrompt.indexOf('RULE 1499'));
+  // A continuation instruction is a standing rule, with or without a persona.
+  assert.match(formatted.systemPrompt, /\[Continuation\]/);
+  assert.match(formatted.systemPrompt, /is an instruction to resume, never a new question/);
+
+  // The prompt cap is a conversation budget, not a licence to cut the persona.
+  const built = serverInternals.buildBoundedPrompt(formatted.systemPrompt, '', 'User: do the task', 120000, {
+    personaStart: formatted.personaStart,
+    personaChars: formatted.personaChars,
+  });
+  assert.ok(built.promptChars >= rules.length, `prompt ${built.promptChars} dropped persona content`);
+  for (const probe of ['RULE 0:', 'RULE 500:', 'RULE 1499:']) assert.match(built.prompt, new RegExp(probe));
+  assert.equal(built.prompt.includes(rules), true, 'the persona must appear verbatim');
+});
+
+test('a loaded persona keeps more of the prompt budget than a bare client system prompt', (t) => {
+  const saved = process.env.DEEPSEEK_PERSONA;
+  t.after(() => {
+    if (saved === undefined) delete process.env.DEEPSEEK_PERSONA;
+    else process.env.DEEPSEEK_PERSONA = saved;
+    serverInternals.resetPersonaCache();
+  });
+  const system = 'RULES '.repeat(4000);
+  const conversation = 'TALK '.repeat(4000);
+  const kept = (prompt) => prompt.split('RULES').length - 1;
+
+  delete process.env.DEEPSEEK_PERSONA;
+  serverInternals.resetPersonaCache();
+  const withoutPersona = serverInternals.buildBoundedPrompt(system, '', conversation, 20000);
+
+  process.env.DEEPSEEK_PERSONA = 'PERSONA';
+  serverInternals.resetPersonaCache();
+  const withPersona = serverInternals.buildBoundedPrompt(system, '', conversation, 20000);
+
+  assert.ok(withPersona.prompt.length <= 20000);
+  assert.ok(kept(withPersona.prompt) > kept(withoutPersona.prompt), 'the persona rules must survive deeper');
+  serverInternals.resetPersonaCache();
+});
+
+test('an unkeyed client gets one session per conversation, not one per process', () => {
+  // OpenCode sends no x-agent-session: an address+UA key alone made every new chat
+  // continue the previous DeepSeek chat, which is why the agent answered the new task
+  // with the old one's context and asked the same questions again.
+  const base = { remoteAddr: '127.0.0.1:5000', userAgent: 'opencode/1.0.0' };
+  const first = serverInternals.agentIdForRequest({
+    ...base,
+    messages: [{ role: 'user', content: 'Fix the parser bug' }],
+  });
+  const grown = serverInternals.agentIdForRequest({
+    ...base,
+    messages: [
+      { role: 'system', content: 'You are opencode' },
+      { role: 'user', content: 'Fix the parser bug' },
+      { role: 'assistant', content: 'Looking now' },
+      { role: 'tool', content: '[Tool Result]\nok' },
+      { role: 'user', content: 'and the tests' },
+    ],
+  });
+  const other = serverInternals.agentIdForRequest({
+    ...base,
+    messages: [{ role: 'user', content: 'Explain the deploy script' }],
+  });
+  assert.equal(first, grown, 'a growing conversation keeps its session');
+  assert.notEqual(first, other, 'a new conversation must not continue the previous chat');
+  assert.match(first, /^unkeyed-[0-9a-f]{12}:[0-9a-f]{12}$/);
+
+  // An explicit key is still the caller's decision.
+  assert.equal(serverInternals.agentIdForRequest({ ...base, requestedSession: 'worker-a', messages: [{ role: 'user', content: 'hi' }] }), 'worker-a');
+  // No user turn yet: fall back to the client-wide key so the request still has one.
+  assert.match(serverInternals.agentIdForRequest({ ...base, messages: [] }), /^unkeyed-[0-9a-f]{12}$/);
+});
+
+test('the conversation fingerprint ignores a replayed agent system prompt', () => {
+  const replayed = `You are opencode. ${'Follow the project rules. '.repeat(40)}`;
+  const withReplay = serverInternals.conversationFingerprint([
+    { role: 'user', content: replayed },
+    { role: 'user', content: 'port the auth flow' },
+  ]);
+  const plain = serverInternals.conversationFingerprint([{ role: 'user', content: 'port the auth flow' }]);
+  assert.equal(withReplay, plain);
+  assert.equal(serverInternals.conversationFingerprint([]), '');
+  assert.notEqual(serverInternals.conversationFingerprint([{ role: 'user', content: 'one' }]), serverInternals.conversationFingerprint([{ role: 'user', content: 'two' }]));
 });
 
 test('agent requests drop harness websearch while native DeepSeek Search is on', () => {
@@ -1484,11 +2037,13 @@ test('one-click agent setup adds opt-in providers without replacing native defau
   assert.equal(opencode.tools.websearch, false);
   assert.equal(opencode.tools.webfetch, false);
   assert.equal(opencode.permission.websearch, 'deny');
-  assert.equal(opencode.provider.freedeepseek.name, 'Flash');
-  assert.equal(opencode.provider.freedeepseek.models['deepseek-v4-flash'].name, 'DeepSeek 4.1');
+  assert.equal(opencode.provider.freedeepseek.name, 'seek');
+  assert.equal(opencode.provider.freedeepseek.models['deepseek-v4-flash'].name, 'seek Flash + web');
   assert.deepEqual(Object.keys(opencode.provider.freedeepseek.models), ['deepseek-v4-flash', 'deepseek-v4-flash-thinking', 'deepseek-v4-flash-nosearch', 'deepseek-v4-flash-thinking-nosearch']);
-  assert.equal(opencode.provider.freedeepseek.models['deepseek-v4-flash-thinking'].name, 'DeepSeek 4.1');
-  assert.equal(opencode.provider.freedeepseek.models['deepseek-v4-flash-thinking'].limit.context, 1048576);
+  assert.equal(opencode.provider.freedeepseek.models['deepseek-v4-flash-thinking'].name, 'seek Flash Thinking + web');
+  // The proxy trims one upstream prompt to DEEPSEEK_MAX_PROMPT_CHARS (120k chars),
+  // so the advertised window is that budget in tokens, not 1M.
+  assert.equal(opencode.provider.freedeepseek.models['deepseek-v4-flash-thinking'].limit.context, 30000);
   assert.equal(opencode.provider.freedeepseek.models['deepseek-v4-flash-thinking'].attachment, true);
   assert.deepEqual(opencode.provider.freedeepseek.models['deepseek-v4-flash-thinking'].modalities.input, ['text', 'image']);
   const agentsMd = fs.readFileSync(path.join(dir, '.config', 'opencode', 'AGENTS.md'), 'utf8');

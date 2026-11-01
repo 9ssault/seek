@@ -129,7 +129,7 @@ test('opencode plan keeps its documented global effects', () => {
   const home = tmpdir();
   put(home, '.config/opencode/opencode.json', JSON.stringify({ model: 'freedeepseek/deepseek-v4-flash', tools: { bash: true } }));
   const p = plan('opencode', { mode: 'add' }, home);
-  assert.equal(p.effects.length, 4);
+  assert.equal(p.effects.length, 6);
   assert.deepEqual(p.files.map(f => f.id), ['config', 'agents_md']);
   const cfg = JSON.parse(fileOf(p, 'config').after);
   assert.equal(cfg.model, 'freedeepseek/deepseek-v4-flash-thinking');
@@ -437,7 +437,7 @@ test('inspectTarget derives each setup state from the files on disk', () => {
   assert.equal(s.setup.state, 'outdated');
   assert.equal(s.setup.key, 'differs');
   assert.deepEqual(s.setup.issues.map(i => i.code), ['key_differs']);
-  assert.equal(s.effects.length, 4);
+  assert.equal(s.effects.length, 6);
 
   put(home, '.config/opencode/opencode.json', '{\n  "model": "x",\n}\n');
   s = inspect('opencode', home);
@@ -650,7 +650,7 @@ test('POST plan validates options and never writes', async (t) => {
 
   res = await request(port, 'POST', '/admin/agents/opencode/plan', { body: { model: 'deepseek-v4-flash', mode: 'add' } });
   assert.equal(res.status, 200);
-  assert.equal(res.json.plan.effects.length, 4);
+  assert.equal(res.json.plan.effects.length, 6);
 
   put(home, '.config/opencode/opencode.json', '{\n  "model": "x",\n}\n');
   const broken = snapshot(home);

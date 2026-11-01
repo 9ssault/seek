@@ -1,4 +1,12 @@
 {
   "openai.baseUrl": "http://127.0.0.1:9655/v1",
-  "openai.apiBase": "http://127.0.0.1:9655/v1"
+  "openai.apiBase": "http://127.0.0.1:9655/v1",
+  "//openaiApiKey": "Paste PROXY_API_KEY (or \"local\") in Cursor Settings → Models → OpenAI API Key",
+  "//addModels": [
+    "deepseek-v4-flash",
+    "deepseek-v4-flash-thinking",
+    "deepseek-v4-flash-nosearch",
+    "deepseek-v4-flash-thinking-nosearch"
+  ],
+  "//overrideOpenAiBaseUrl": "http://127.0.0.1:9655/v1"
 }

@@ -53,6 +53,7 @@ function systemCandidates(platform, home, env) {
   return [
     '/usr/bin/google-chrome',
     '/usr/bin/google-chrome-stable',
+    '/usr/bin/helium-browser',
     '/usr/bin/chromium',
     '/usr/bin/chromium-browser',
     '/snap/bin/chromium',

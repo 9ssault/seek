@@ -1,4 +1,11 @@
 // Reads page stores for the exporter. Token lives in localStorage, not cookies.
+// Works in Chrome and Firefox/Helium (Manifest V3).
+
+// Firefox exposes `browser`, Chrome exposes `chrome`. Normalise.
+if (typeof chrome === 'undefined' && typeof browser !== 'undefined') {
+  // eslint-disable-next-line no-global-assign
+  chrome = browser;
+}
 
 chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
   if (request.action === 'readPageStores') {
@@ -28,10 +35,18 @@ function dumpPageStores() {
   } catch {
     wasmUrl = '';
   }
+  let userInfo = null;
+  try {
+    const userRaw = window.localStorage.getItem('user_info') || window.localStorage.getItem('user') || window.localStorage.getItem('profile');
+    if (userRaw) userInfo = JSON.parse(userRaw);
+  } catch {
+    userInfo = null;
+  }
   return {
     href: location.href,
     localStorage: dump(window.localStorage),
     sessionStorage: dump(window.sessionStorage),
+    userInfo,
     wasmUrl,
   };
 }

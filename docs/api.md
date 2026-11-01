@@ -48,7 +48,7 @@ curl -sS http://127.0.0.1:9655/v1/chat/completions \
 | `stream` | SSE chunks; last chunk includes `usage` |
 | `x-account-id` (response) | Which Web login served the request |
 
-Clients without `x-agent-session` (or `user`) get a stable `unkeyed-<hash>` session per remote address + User-Agent, so unrelated clients never share one chat. Overlapping real chats on one login wait in a per-account queue (`DEEPSEEK_ACCOUNT_LOCK_WAIT_MS`, default matches the request deadline). OpenCode session-title completions are answered locally and do not occupy the login.
+Clients without `x-agent-session` (or `user`) get `unkeyed-<hash>:<conversation>`, where the hash covers remote address + User-Agent and the conversation part fingerprints the first real user turn. So one agent process keeps continuity while its chat grows, and a **new** chat starts a **new** DeepSeek chat instead of continuing the previous one — OpenCode, Codex and other OpenAI-compatible clients never send a session header, and one client-wide key made every new chat answer from the old task's context (with the system prompt omitted, since it looked like a continuation). Requests with no user turn yet fall back to the client-wide `unkeyed-<hash>`. Overlapping real chats on one login wait in a per-account queue (`DEEPSEEK_ACCOUNT_LOCK_WAIT_MS`, default matches the request deadline). OpenCode session-title completions are answered locally and do not occupy the login.
 
 On a live sticky Web chat the proxy sends the system prompt and tool list **once**. Later OpenCode / Claude Code / Codex turns omit that system blob and replayed history; only the new user/tool turn goes upstream. A changed system prompt is sent again. Remote session reset (TTL, `/new`, empty-response retry) sends the full prompt.
 

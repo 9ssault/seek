@@ -297,10 +297,75 @@ h1 {
   color: var(--warning);
 }
 
+/* ── Google Sign-In section ─────────────────────────────────────────────── */
+
+.google-signin-section {
+  margin-bottom: 12px;
+  padding: 12px;
+  border: 1px solid var(--line);
+  border-radius: 14px;
+  background: var(--surface);
+  text-align: center;
+}
+
+.signin-hint {
+  color: var(--muted);
+  font-size: 11px;
+  line-height: 1.4;
+  margin-bottom: 10px;
+}
+
+.btn-google {
+  width: 100%;
+  min-height: 42px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: var(--surface);
+  color: var(--text);
+  font: 600 13px/1 "Avenir Next", Avenir, "Trebuchet MS", sans-serif;
+  gap: 8px;
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  transition: background-color 120ms ease, box-shadow 120ms ease;
+}
+
+.btn-google:hover:not(:disabled) {
+  background: var(--surface-soft);
+  box-shadow: 0 1px 4px rgba(0,0,0,.08);
+}
+
+.btn-google:active:not(:disabled) {
+  transform: scale(0.975);
+}
+
+.btn-google:disabled {
+  opacity: 0.45;
+  cursor: default;
+}
+
+.google-icon {
+  width: 18px;
+  height: 18px;
+  flex-shrink: 0;
+  /* Google icon has its own fill colours, no stroke */
+  stroke: none;
+  fill: none;
+}
+
+/* ── Action buttons (3-up grid) ─────────────────────────────────────────── */
+
 .actions {
   display: grid;
+  /* 2 cols top row (Copy + Download), full-width Push below */
   grid-template-columns: 1fr 1fr;
+  grid-template-rows: auto auto;
   gap: 9px;
+}
+
+.btn-push {
+  grid-column: 1 / -1; /* span full width */
 }
 
 .btn-secondary {
@@ -325,3 +390,44 @@ h1 {
     border-color: currentColor;
   }
 }
+
+/* Sign-out-after-push toggle */
+.toggle {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  margin: 10px 16px 0;
+  color: var(--muted);
+  font-size: 11px;
+  line-height: 1.4;
+  cursor: pointer;
+}
+
+.toggle input {
+  margin: 1px 0 0;
+  accent-color: var(--accent);
+  flex: none;
+}
+
+.toggle-text {
+  flex: 1;
+}
+
+.toggle:has(input:checked) .toggle-text {
+  color: var(--text);
+}
+
+/* Pool chip: how many logins the proxy has right now. */
+.pool {
+  margin-left: auto;
+  align-self: flex-start;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 10px;
+  letter-spacing: 0.3px;
+  padding: 2px 6px;
+  border-radius: 999px;
+  border: 1px solid var(--border, #2a2a30);
+  color: var(--muted, #8b8b93);
+  white-space: nowrap;
+}
+.pool[data-state="on"] { border-color: #2f6f4f; color: #4ade80; }

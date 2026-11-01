@@ -106,6 +106,7 @@ One model is on the site today: **DeepSeek-V4.1-Flash**. The native Web Search b
 - [Updates](#updates)
 - [Sign-in](#sign-in)
 - [Coding agents](#coding-agents)
+- [Reverse-engineering and pentest tools](#reverse-engineering-and-pentest-tools)
 - [Check that it works](#check-that-it-works)
 - [Request examples](#request-examples)
   - [Chat Completions](#chat-completions)
@@ -384,12 +385,26 @@ If you see `data.biz_data is null`, `fetch failed`, `401`, `403`, `429`, or a co
 FreeDeepseekAPI does not open a new DeepSeek chat on every HTTP request.
 
 - One `x-agent-session`, `session`, or `user` value is one DeepSeek chat.
+- A client that sends none (OpenCode, Codex, most OpenAI-compatible tools) gets one chat **per conversation**: the first user turn identifies it, so a new chat no longer continues the previous one. Send a header if you want to control the mapping yourself.
+
+### Memory, and what happens when a prompt is too long
+
+A long session used to end twice: the middle of the conversation was cut to fit `DEEPSEEK_MAX_PROMPT_CHARS`, and the next upstream chat started with nothing.
+
+- **Trim with a summary.** When a prompt has to be cut, the dropped middle is compressed and the summary takes its place, so the agent still knows what happened. `GET /health` → `context_summary` counts them (`dropped_chars` in, `summary_chars` out, how many were cached, how many were folded into existing memory).
+- **That memory is cumulative.** Each new trim folds into the summary already there instead of replacing it, so a session that has been trimmed five times still remembers its goal and the decisions taken at the start. It is asked for under fixed headings — `GOAL`, `DECIDED`, `FILES`, `ERRORS`, `OPEN` — with identifiers kept verbatim.
+- **Summaries use a spare login.** The summarizer picks a login that is not serving a chat, so it never queues behind the agent. Pin it with `DEEPSEEK_SUMMARY_ACCOUNT` to dedicate an account to it. It always runs on `DEEPSEEK_SUMMARY_MODEL` (default `deepseek-v4-flash-nosearch`): a summary is bookkeeping, so it does not inherit a thinking model or fire a web search.
+- **Memory across a rollover.** On TTL/message-depth rollover the replayed turns are folded into one rolling summary, and that summary travels with the conversation.
+- **Memory across a restart.** Summaries and the last 24 turns are written to `~/.freedeepseek-api/memory.json` (0600). A restored conversation starts a fresh upstream chat — the old one is gone — but it does not start from nothing.
+- **Recall across conversations.** A brand-new conversation gets at most 1,200 characters of the most relevant earlier summaries, matched on shared identifiers (paths, file names, flags) with at least two overlaps. Unrelated work is never injected; `DEEPSEEK_RECALL=0` turns it off.
+- **Persona.** `DEEPSEEK_PERSONA_FILE=/path/to/persona.txt` makes every request carry that text as its system prompt (`DEEPSEEK_PERSONA_MODE=replace` to drop the client's own). The file stays yours; nothing is embedded in this repository.
+- **The persona is sent once per chat, not once per request.** The first request of an upstream chat carries the whole file; every later turn in that chat carries one line saying the standing rules still apply, so the tokens go to the work. A loaded persona also gets a larger share of a tight prompt than the client's own system prompt (60% instead of 50%), because a half-cut rules file is worse than a dropped middle turn. `GET /health` → `persona.sent_in_full` and `persona.reminded_instead` show the split.
 - When that chat already exists, the proxy continues it with `parent_message_id`.
 - The standing system prompt and the tool list go upstream **once**. Later turns from OpenCode, Claude Code, and Codex send only the new user or tool turn.
 - A changed system prompt is sent again.
 - An empty reply, a broken tool-call, or a timeout **keeps** the live chat. Those failures used to open a new chat and resend the whole prompt. They do not anymore.
 - A new chat starts when the session is missing, the chain hits 100 messages, the chat is older than 2 hours, DeepSeek says the prompt is too long, or you call `/reset-session`.
-- Long prompts are cut to `DEEPSEEK_MAX_PROMPT_CHARS` (default 80,000 characters) before they are sent. The start of the task, the latest tool results, and the tool reminder stay.
+- Long prompts are cut to `DEEPSEEK_MAX_PROMPT_CHARS` (default 120,000 characters) before they are sent. The start of the task, the summary of what was cut, the latest tool results, and the tool reminder stay. A single oversized turn (a pasted file, a long brief) is bounded the same way and its cut middle is summarized too, not just multi-turn middles.
 - If the client already sent a multi-turn history, the proxy does not paste its own recovery history a second time.
 - An empty reply is retried up to `DEEPSEEK_MAX_RETRIES` times (default 2). Each retry uses a smaller slice of context, still on the same chat when that chat is alive.
 
@@ -541,6 +556,9 @@ Then restart the proxy.
 | `npm run deepseek:auth` | Chrome capture of token and cookies |
 | `npm run auth:import` | Import `deepseek-auth.json` or a browser cookie export |
 | `npm run doctor` | Check the files. Drop `--offline` to also hit PoW |
+| `npm run ratelimit` | One line per login: `ok`, `ratelimit`, `waf`, `auth` or `network`. `--json`, `--refresh`, `--whoami`, `--quarantine` |
+
+A login whose state is `auth` (`biz_code 40001-40003`) has a dead token: DeepSeek will not re-issue it, and a WAF refresh cannot mint one, so every request it serves is wasted. `npm run ratelimit -- --quarantine` lists those logins; add `--apply` to move their files into `accounts/.removed/` — nothing is deleted, and re-capturing one with the extension brings it back into the pool.
 
 Chrome extension: load `chrome-extension/` on an open chat.deepseek.com tab. Collect until **Token** is Ready, then save the file. Do not paste that JSON into a chat.
 
@@ -557,6 +575,7 @@ npm run setup:agents
 npm run setup:agents -- --all --model deepseek-v4-flash
 npm run setup:agents -- --target claude-code --model deepseek-v4-flash-thinking
 npm run setup:agents -- --target codex --model deepseek-v4-flash
+npm run verify:integrations
 ```
 
 The proxy must already be listening. The default origin is `http://127.0.0.1:9655`. Override it with `--base-url`. If `PROXY_API_KEY` is set, it is copied into the agent config.
@@ -574,6 +593,8 @@ Setup adds FreeDeepseekAPI as an opt-in profile. It does not replace Claude, GPT
 
 `--model` is always DeepSeek-V4.1-Flash, with native chat.deepseek.com search on. `-thinking` turns DeepThink on. `-nosearch` turns search off; the agent then keeps its own web tools. An old `-search` id maps to the same id without the suffix.
 
+`npm run verify:integrations` compares every agent config with the proxy that is actually running: the model ids it names, the context window it advertises (the proxy trims a prompt to `DEEPSEEK_MAX_PROMPT_CHARS`, so advertising 1M tokens only fills context that then gets cut), the base URL and key it sends, and whether the file still matches what setup writes. It reads only, and `--probe` adds one real completion. Exit code 2 lists what needs a fix.
+
 Codex setup does **not** set `forced_login_method = api`. On Codex CLI that line logs you out of ChatGPT. Normal `codex` stays on ChatGPT. The FreeDeepseek profile talks to this proxy.
 
 Images:
@@ -590,6 +611,44 @@ node scripts/setup-agents.js --restore ~/.freedeepseek-api/backups/<stamp>
 ```
 
 Two agents at once need two Web logins in `accounts/`. Details: [docs/agents.md](docs/agents.md).
+
+---
+
+## Reverse-engineering and pentest tools
+
+`npm run setup:tools` puts the tools already installed on this machine into the harnesses as slash commands, so the agent reaches for `jadx` instead of guessing at an APK, and for `/pentest` instead of a curl loop.
+
+```bash
+npm run setup:tools            # what is installed, written to both harnesses
+npm run setup:tools -- --all   # every entry, with the missing ones marked
+npm run setup:tools -- --only rea,jadx
+npm run setup:tools -- --dry-run
+```
+
+It writes `~/.config/opencode/command/<id>.md` and `~/.codex/prompts/<id>.md`. Each file is short: the tool, the invocation, and the rule for reading its output. Nothing is copied into every prompt — a command loads when you type it.
+
+| Command | Tool | Use it for |
+|---|---|---|
+| `/rea` | [REA](https://github.com/morluto/rea) (`rea-agents`) | binaries, Electron/JS apps, APKs, firmware, captures |
+| `/jadx` | jadx | an APK as readable Java |
+| `/apktool` | apktool | resources, smali, repacking |
+| `/ghidra` | `analyzeHeadless` | headless decompilation |
+| `/rizin` | rizin / radare2 | headers, sections, imports, quick disassembly |
+| `/ida` | IDA Pro (`ida64`) | licensed native work |
+| `/frida` | frida | runtime hooks, decrypted buffers, bypassed checks |
+| `/gdb` | gdb | crashes, control flow |
+| `/tshark` | tshark | a pcap as a sequence of facts |
+| `/nmap` | nmap | ports and versions in scope |
+| `/binwalk`, `/unblob` | binwalk, unblob | firmware signatures and extraction |
+| `/yara` | yara | signature matching |
+| `/stool` | [stool](../stool/README.md) | OSINT/CSINT workspace: `hunt`, `profile`, `note`, `entity`, `graph`, `pivot`, `track`, `ask` |
+| `/pentest` | [AKCodez/hackingtool-plugin](https://github.com/AKCodez/hackingtool-plugin) | 183+ recon, scan, OSINT tools behind one wrapper |
+
+The pentest plugin is vendored at `plugins/hackingtool/`. `/pentest` runs `ht_preflight.py` first and reports the backend it picked; on this machine that is native (`nmap`, `nuclei`, `subfinder`, `httpx`, `ffuf` on PATH), with Docker as the fallback when a tool is missing. Its `${CLAUDE_PLUGIN_ROOT}` placeholder is resolved to the vendored path at setup time.
+
+A tool that is not installed still gets a command file under `--all`, and that file says so — the agent is told to install it, or to say it cannot run, never to pretend it did.
+
+Nothing local is tracked: `reports/`, `profiles/`, `cache/`, `data/`, `wordlists/`, databases and run artifacts are in `.gitignore`. Captured logins stay out of the repository too (`accounts/*.json`, `deepseek-auth.json`, `.env*`).
 
 ---
 
@@ -816,12 +875,29 @@ Full table: [docs/models.md](docs/models.md).
 | `PROXY_ADMIN_ALLOW_REMOTE` | off | If `1`, `/admin/*` answers non-loopback clients even without `PROXY_API_KEY` |
 | `DEEPSEEK_AUTH_PATH` | `./deepseek-auth.json` | One file, or a comma-separated list |
 | `DEEPSEEK_AUTH_DIR` | `./accounts` when that directory exists | Every `*.json` in it |
-| `DEEPSEEK_MAX_PROMPT_CHARS` | `80000` | Cap on what is sent upstream. Minimum 16000 |
+| `DEEPSEEK_MAX_PROMPT_CHARS` | `120000` | Cap on what is sent upstream. Minimum 16000 |
+| `DEEPSEEK_SUMMARY_COMPACT` | on | When a prompt must be cut, summarize the dropped middle instead of discarding it |
+| `DEEPSEEK_SUMMARY_ACCOUNT` | any idle login | Pin the summarizer to one login. By default it takes a login that is not serving a chat |
+| `DEEPSEEK_SUMMARY_MAX_CHARS` | `2200` | Length of the cumulative compaction summary (`200`–`8000`) |
+| `DEEPSEEK_SUMMARY_TIMEOUT_MS` | `25000` | Give up on a summary and send the plain bounded prompt |
+| `DEEPSEEK_SUMMARY_MODEL` | `deepseek-v4-flash-nosearch` | Model the summarizer runs on, whatever the caller used |
+| `DEEPSEEK_PERSONA_FILE` | off | Text file whose contents are added to the system prompt of every request |
+| `DEEPSEEK_PERSONA` | off | The same persona inline. Wins over the file |
+| `DEEPSEEK_PERSONA_MODE` | `append` | `append` keeps the client's system prompt and adds the persona; `replace` sends only the persona |
+| `DEEPSEEK_PERSONA_MAX_CHARS` | `64000` | Persona cap (`1000`–`200000`). The prompt budget still bounds what is sent |
+| `DEEPSEEK_PERSIST_MEMORY` | on | Save rolling summaries, compaction memory and recent turns to disk so a restart keeps them |
+| `DEEPSEEK_MEMORY_PATH` | `~/.freedeepseek-api/memory.json` | Where that memory lives |
+| `DEEPSEEK_RECALL` | on | Give a new conversation a short recall of related earlier work |
+| `DEEPSEEK_RECALL_MAX_CHARS` | `1200` | Cap on that recall block (`200`–`4000`) |
 | `DEEPSEEK_MAX_RETRIES` | `2` | Empty-reply retries on the same chat |
 | `DEEPSEEK_REQUEST_DEADLINE_MS` | `120000` | Per-request deadline |
 | `DEEPSEEK_MAX_CONCURRENT` | `24` | Process-wide cap. Real parallelism is the number of idle logins |
 | `DEEPSEEK_ACCOUNT_LOCK_WAIT_MS` | `120000` | How long a second chat waits for a busy login |
-| `DEEPSEEK_ACCOUNT_COOLDOWN_MS` | `600000` | Cooldown after 401, 403, or a rate limit without `Retry-After` |
+| `DEEPSEEK_ACCOUNT_COOLDOWN_MS` | `600000` | Cooldown after 401, 403, or the first rate limit without `Retry-After` |
+| `DEEPSEEK_MAX_ACCOUNT_COOLDOWN_MS` | `1800000` | Ceiling for the geometric backoff a login earns by getting throttled again |
+| `DEEPSEEK_WAF_AUTO_REFRESH` | on | If `1`, a login whose 401 is an AWS WAF challenge page gets a fresh `aws-waf-token` in the background instead of a 10-minute auth cooldown |
+| `DEEPSEEK_WAF_AUTO_REFRESH_COOLDOWN_MS` | `300000` | Minimum gap between two automatic refreshes of the same login |
+| `DEEPSEEK_WAF_TRANSIENT_COOLDOWN_MS` | `30000` | How long a login sits out while its WAF token is refreshed |
 | `TRUST_PROXY` | off | If `1`, the client IP is taken from `X-Forwarded-For` |
 | `MAX_REQUEST_BODY_BYTES` | `31457280` | Maximum JSON body, including base64 images |
 | `NON_INTERACTIVE` / `SKIP_ACCOUNT_MENU` | off | Skip the launch menu |

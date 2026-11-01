@@ -34,8 +34,22 @@ const LEGACY_SEARCH_MODELS = {
 const DEFAULT_MODEL = 'deepseek-v4-flash';
 const CODEX_BASE_INSTRUCTIONS = 'You are a coding agent. Follow developer instructions and use local tools when needed. Local tools are JSON, and several independent calls may be one tool_calls array.';
 const CODEX_NATIVE_SEARCH_INSTRUCTIONS = 'Do not use the Codex/harness web search tool. DeepSeek native Web Search is enabled — use it for live web data and report the findings.';
-const OPENCODE_MODEL_LABEL = 'DeepSeek 4.1';
-const OPENCODE_PROVIDER_LABEL = 'Flash';
+// Each variant gets its own name, under the product's own name. A bare upstream model
+// name in the picker made the agent introduce itself as somebody else's model.
+const OPENCODE_MODEL_NAMES = {
+  'deepseek-v4-flash': 'seek Flash + web',
+  'deepseek-v4-flash-thinking': 'seek Flash Thinking + web',
+  'deepseek-v4-flash-nosearch': 'seek Flash',
+  'deepseek-v4-flash-thinking-nosearch': 'seek Flash Thinking',
+};
+const OPENCODE_PROVIDER_LABEL = 'seek';
+// The proxy cuts one upstream prompt to DEEPSEEK_MAX_PROMPT_CHARS characters
+// (120k ≈ 30k tokens) and drops the middle beyond that, so advertising a 1M-token
+// window made the agent fill a context that was then silently truncated.
+const HONEST_CONTEXT_TOKENS = Math.max(
+  8192,
+  Math.floor((Number(process.env.DEEPSEEK_MAX_PROMPT_CHARS) || 120000) / 4),
+);
 const AGENT_FILE_MAX_BYTES = 1024 * 1024;
 const BACKUP_ID_RE = /^\d{4}-\d{2}-\d{2}T\d{2}-\d{2}-\d{2}-\d{3}Z(?:-[a-z0-9]{4})?$/;
 
@@ -490,8 +504,8 @@ function codexCatalog() {
       support_verbosity: false,
       default_verbosity: null,
       input_modalities: ['text', 'image'],
-      context_window: 1048576,
-      max_context_window: 1048576,
+      context_window: HONEST_CONTEXT_TOKENS,
+      max_context_window: HONEST_CONTEXT_TOKENS,
       effective_context_window_percent: 95,
       experimental_supported_tools: [],
       truncation_policy: { mode: 'tokens', limit: 10000 },
@@ -856,6 +870,8 @@ const TARGETS = {
     fixedModels: [],
     effects: [
       "Turns off OpenCode's own web search and web fetch tools for every model, and denies them in permissions.",
+      `Advertises a ${HONEST_CONTEXT_TOKENS}-token context window — the size the proxy really serves — instead of 1M, so OpenCode compacts before the proxy has to cut the prompt.`,
+      'Names each variant in the picker (Flash / Thinking / + search) instead of four identical rows.',
       'Resizes attached images to at most 2000 × 2000 px for every model.',
       'Adds a FreeDeepseekAPI section to ~/.config/opencode/AGENTS.md, which every OpenCode model reads.',
       'If the default model is already a freedeepseek/ model, sets it to freedeepseek/deepseek-v4-flash-thinking.',
@@ -866,12 +882,12 @@ const TARGETS = {
         const models = {};
         for (const id of VALID_MODELS) {
           models[id] = {
-            name: OPENCODE_MODEL_LABEL,
+            name: OPENCODE_MODEL_NAMES[id] || id,
             attachment: true,
             reasoning: id.includes('thinking'),
             tool_call: true,
             modalities: { input: ['text', 'image'], output: ['text'] },
-            limit: { context: 1048576, output: 8192 },
+            limit: { context: HONEST_CONTEXT_TOKENS, output: 8192 },
           };
         }
         cfg.$schema = cfg.$schema || 'https://opencode.ai/config.json';

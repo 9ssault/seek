@@ -29,15 +29,25 @@ const {
     writeCapturedAuth,
 } = require('./lib/chrome-setup');
 const { resolveAuthOutPath } = require('./auth_import');
+const { fetchIdentity } = require('../lib/auth-health');
 
 const repoRoot = path.resolve(__dirname, '..');
 const qwenRepoRoot = path.resolve(repoRoot, '..', 'FreeQwenApi');
-const profileDir =
-    process.env.DEEPSEEK_CHROME_PROFILE ||
-    path.join(repoRoot, '.chrome-for-testing-profile-deepseek');
+// Each output file gets its own dedicated Chrome profile so that different accounts
+// receive distinct aws-waf-token values. Sharing a profile (even after deletion)
+// across multiple auth runs causes DeepSeek to bind all accounts to the same WAF
+// session, rejecting all but one with HTTP 401 on the PoW challenge.
+const outPath = resolveAuthOutPath(process.env);
+const profileDir = (() => {
+    if (process.env.DEEPSEEK_CHROME_PROFILE) return process.env.DEEPSEEK_CHROME_PROFILE;
+    // Derive a stable per-account-file profile name so re-running auth for the
+    // same account reuses its profile (keeps WAF token fresh via existing session)
+    // but different accounts always get separate profiles.
+    const outBase = path.basename(outPath, '.json').replace(/[^a-zA-Z0-9_-]/g, '_');
+    return path.join(repoRoot, `.chrome-for-testing-profile-${outBase}`);
+})();
 // Use a dedicated default port so an older normal-Chrome auth window on 9333 is not reused.
 const port = Number(process.env.DEEPSEEK_CHROME_PORT || 9334);
-const outPath = resolveAuthOutPath(process.env);
 const url = 'https://chat.deepseek.com/';
 const reuseChrome = /^(1|true|yes|on)$/i.test(
     process.env.DEEPSEEK_REUSE_CHROME || '',
@@ -541,6 +551,7 @@ async function main() {
                         '--use-mock-keychain',
                         '--password-store=basic',
                         '--disable-sync',
+                        '--disable-blink-features=AutomationControlled',
                         '--disable-extensions',
                         '--disable-component-extensions-with-background-pages',
                         '--disable-features=AutofillServerCommunication,OptimizationHints,MediaRouter,InterestFeedContentSuggestions,Translate',
@@ -607,7 +618,14 @@ async function main() {
         },
     );
     const { href, cookiesCount, ...persisted } = auth;
-    const success = writeCapturedAuth(outPath, persisted);
+    // A capture is only worth saving when DeepSeek says who the credentials belong to.
+    // An anonymous session has no bearer token and leaves the page on /sign_in, so it
+    // looks like a successful capture while being useless as a login.
+    const identity = persisted.token && persisted.cookie
+        ? await fetchIdentity(persisted)
+        : { loggedIn: false, verified: true, reason: 'no credentials' };
+    const anonymous = identity.verified !== false && !identity.loggedIn;
+    const success = anonymous ? false : writeCapturedAuth(outPath, persisted);
     cdp.close();
     if (!reuseChrome) await closeChromeOnPort();
     const result = await pick(
@@ -615,10 +633,19 @@ async function main() {
             lang: langRef.current,
             subtitle: t(langRef.current, success ? 'done' : 'importFail'),
             status: [
-                { ok: success, label: '', value: success ? t(langRef.current, 'authReady') : t(langRef.current, 'importFail') },
+                { ok: success, label: '', value: success ? t(langRef.current, 'authReady') : anonymous ? t(langRef.current, 'notSignedIn') : t(langRef.current, 'importFail') },
                 { ok: Boolean(persisted.token), label: t(langRef.current, 'token'), value: persisted.token ? `${persisted.token.length} chars` : t(langRef.current, 'missing') },
                 { ok: Boolean(persisted.cookie), label: t(langRef.current, 'cookies'), value: persisted.cookie ? String(cookiesCount) : t(langRef.current, 'missing') },
-                { ok: Boolean(href), label: t(langRef.current, 'session'), value: outPath },
+                {
+                    ok: identity.loggedIn,
+                    label: t(langRef.current, 'session'),
+                    value: identity.loggedIn
+                        ? `${t(langRef.current, 'signedInAs')} ${identity.email || identity.mobile || identity.id}`
+                        : identity.verified === false
+                            ? t(langRef.current, 'loginUnknown')
+                            : t(langRef.current, 'notSignedIn'),
+                },
+                { ok: Boolean(href), label: t(langRef.current, 'importOk'), value: outPath },
             ],
             items: success && process.env.FREDEEPSEEK_EMBEDDED
                 ? [

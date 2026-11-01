@@ -74,6 +74,9 @@ const STRINGS = {
     readingSession: 'Reading the DeepSeek session…',
     openingChrome: 'Opening Chrome…',
     authReady: 'Connected. Your DeepSeek session is ready.',
+    notSignedIn: 'Not signed in — this browser session is anonymous',
+    signedInAs: 'Signed in as',
+    loginUnknown: 'Sign-in could not be verified (offline)',
     configureAgents: 'Configure coding agents',
     chromeMissing: 'Chrome is not installed',
     chromeSearching: 'Looking for Chrome…',
@@ -158,6 +161,9 @@ const STRINGS = {
     readingSession: 'Читаю сессию DeepSeek…',
     openingChrome: 'Открываю Chrome…',
     authReady: 'Готово. Сессия DeepSeek подключена.',
+    notSignedIn: 'Вход не выполнен — сессия анонимная',
+    signedInAs: 'Вошли как',
+    loginUnknown: 'Не удалось проверить вход (нет сети)',
     configureAgents: 'Настроить coding-агентов',
     chromeMissing: 'Chrome не установлен',
     chromeSearching: 'Ищу Chrome…',
@@ -242,6 +248,9 @@ const STRINGS = {
     readingSession: '正在读取 DeepSeek 会话…',
     openingChrome: '正在打开 Chrome…',
     authReady: '连接成功。DeepSeek 会话已就绪。',
+    notSignedIn: '尚未登录 — 当前是匿名会话',
+    signedInAs: '已登录为',
+    loginUnknown: '无法验证登录状态（离线）',
     configureAgents: '配置 Coding Agent',
     chromeMissing: '未安装 Chrome',
     chromeSearching: '正在查找 Chrome…',
@@ -264,29 +273,94 @@ const C = {
   reset: '\x1b[0m',
   bold: '\x1b[1m',
   dim: '\x1b[2m',
+  italic: '\x1b[3m',
   cyan: '\x1b[36m',
+  brightCyan: '\x1b[96m',
   blue: '\x1b[94m',
   green: '\x1b[32m',
+  brightGreen: '\x1b[92m',
   red: '\x1b[31m',
   yellow: '\x1b[33m',
   brightYellow: '\x1b[93m',
   magenta: '\x1b[35m',
+  brightMagenta: '\x1b[95m',
+  white: '\x1b[97m',
   inv: '\x1b[7m',
   bg: '\x1b[48;5;23m',
+  bgDark: '\x1b[48;5;234m',
+  fgCyan24: '\x1b[38;2;34;211;190m',
+  fgBlue24: '\x1b[38;2;90;169;255m',
+  fgGray24: '\x1b[38;2;140;140;140m',
 };
 
+// ── Banner glyphs: 5-row block letters ──────────────────────────────────────
+// Each letter is 7 columns wide (incl. trailing space) so words stay spaced.
+// Pixel = '█', half-block top = '▀', half-block bot = '▄', shade = '▓'/'░'.
 const GLYPH = {
-  D: ['██████ ', '██   ██', '██   ██', '██   ██', '██████ '],
-  E: ['███████', '██     ', '█████  ', '██     ', '███████'],
-  F: ['███████', '██     ', '█████  ', '██     ', '██     '],
-  P: ['██████ ', '██   ██', '██████ ', '██     ', '██     '],
-  R: ['██████ ', '██   ██', '██████ ', '██   ██', '██   ██'],
+  // F — flat-cap, double-bar
+  F: [
+    '███████',
+    '██  ░░░',
+    '█████░░',
+    '██  ░░░',
+    '██  ░░░',
+  ],
+  // R — rounded leg kick
+  R: [
+    '██████░',
+    '██   ██',
+    '██████░',
+    '██  ██░',
+    '██   ██',
+  ],
+  // E — triple-tier slab
+  E: [
+    '███████',
+    '██░░░░░',
+    '█████░░',
+    '██░░░░░',
+    '███████',
+  ],
+  // D — open arc
+  D: [
+    '██████░',
+    '██   ██',
+    '██   ██',
+    '██   ██',
+    '██████░',
+  ],
+  // E — (reused above)
+  // P — closed head, open tail
+  P: [
+    '██████░',
+    '██   ██',
+    '██████░',
+    '██░░░░░',
+    '██░░░░░',
+  ],
 };
 
 function wordmarkLines(word = 'FREEDEEP') {
   const letters = [...String(word).toUpperCase()].map(ch => GLYPH[ch]);
   if (letters.some(g => !g)) return [word];
   return [0, 1, 2, 3, 4].map(row => letters.map(g => g[row]).join(' '));
+}
+
+// Colour each row of the banner with a cyan→blue gradient (brightest at top).
+const BANNER_ROW_COLORS = [
+  C.fgCyan24 + C.bold,   // row 0 — brightest cyan
+  C.fgCyan24 + C.bold,   // row 1
+  C.fgBlue24 + C.bold,   // row 2 — mid blue
+  C.fgBlue24 + C.bold,   // row 3
+  C.brightCyan + C.bold, // row 4 — bright accent
+];
+
+function coloredWordmark(word = 'FREEDEEP') {
+  const lines = wordmarkLines(word);
+  return lines.map((line, i) => {
+    const color = BANNER_ROW_COLORS[i] || (C.cyan + C.bold);
+    return `${color}${line}${C.reset}`;
+  });
 }
 
 function t(lang, key) {
@@ -452,15 +526,20 @@ function renderFrame(state) {
   const lines = Array(topBlank).fill('');
   let y = topBlank + 1;
 
-  const mark = wordmarkLines('FREEDEEP');
+  const mark = coloredWordmark('FREEDEEP');
   mark.forEach((row) => {
-    lines.push(centered(`${C.bold}${row}${C.reset}`, width));
+    lines.push(centered(row, width));
     y += 1;
   });
   lines.push('');
   y += 1;
 
-  const credit = `${C.dim}from${C.reset} ${C.brightYellow}${C.bold}dekrezz${C.reset}`;
+  // Tagline: "DeepSeek Web → local OpenAI API" in dim italic, centered
+  const tagline = `${C.fgGray24}DeepSeek Web  ${C.brightCyan}→${C.reset}${C.fgGray24}  local OpenAI API${C.reset}`;
+  lines.push(centered(tagline, width));
+  y += 1;
+
+  const credit = `${C.dim}by${C.reset} ${C.brightYellow}${C.bold}dekrezz${C.reset}`;
   let langBits = '';
   for (const code of LANGS) {
     const label = ` ${code.toUpperCase()} `;
@@ -487,8 +566,8 @@ function renderFrame(state) {
   y += 1;
 
   for (const row of state.status) {
-    const dot = row.ok ? `${C.green}▸${C.reset}` : `${C.red}▸${C.reset}`;
-    const label = row.label ? `${C.dim}${row.label}${C.reset}  ` : '';
+    const dot = row.ok ? `${C.brightGreen}●${C.reset}` : `${C.red}●${C.reset}`;
+    const label = row.label ? `${C.fgGray24}${row.label}${C.reset}  ` : '';
     lines.push(centered(`${dot}  ${label}${row.value}`, width));
     y += 1;
   }
@@ -511,13 +590,15 @@ function renderFrame(state) {
   state.items.forEach((item, i) => {
     const active = i === state.index;
     const hovered = state.hover === `item:${i}`;
-    const slab = active ? `${C.cyan}▌${C.reset}` : hovered ? `${C.cyan}│${C.reset}` : ' ';
+    const slab = active ? `${C.fgCyan24}▌${C.reset}` : hovered ? `${C.brightCyan}│${C.reset}` : ' ';
     const check = typeof item.checked === 'boolean'
-      ? `${item.checked ? `${C.green}◆${C.reset}` : `${C.dim}◇${C.reset}`}  `
+      ? `${item.checked ? `${C.brightGreen}◆${C.reset}` : `${C.dim}◇${C.reset}`}  `
       : '';
-    const label = active || hovered
-      ? `${check}${C.bold}${item.label}${C.reset}`
-      : `${check}${C.dim}${item.label}${C.reset}`;
+    const label = active
+      ? `${check}${C.brightCyan}${C.bold}${item.label}${C.reset}`
+      : hovered
+        ? `${check}${C.brightCyan}${item.label}${C.reset}`
+        : `${check}${C.dim}${item.label}${C.reset}`;
     const itemLine = `${slab}  ${label}`;
     const itemX = Math.max(1, Math.floor((width - menuWidth) / 2) + 1);
     lines.push(`${' '.repeat(itemX - 1)}${padVisible(itemLine, menuWidth)}`);
@@ -527,7 +608,8 @@ function renderFrame(state) {
 
   if (state.items.length) {
     lines.push('');
-    lines.push(centered(`${C.dim}${state.footer || '↑↓  enter  ·  click'}${C.reset}`, width));
+    const hint = state.footer || '↑↓ navigate  ·  enter select  ·  1–9 jump  ·  q quit';
+    lines.push(centered(`${C.fgGray24}${hint}${C.reset}`, width));
   }
 
   process.stdout.write(`\x1b[H\x1b[J${lines.join('\n')}\n`);
@@ -745,11 +827,32 @@ function browserOpenCommand(platform, url) {
 
 function printWordmark(subtitle = '') {
   const width = Math.max(60, process.stdout.columns || 80);
+  const hasTrueColor = process.env.COLORTERM === 'truecolor' || process.env.COLORTERM === '24bit';
+  const lines = hasTrueColor ? coloredWordmark('FREEDEEP') : wordmarkLines('FREEDEEP').map(l => `${C.cyan}${C.bold}${l}${C.reset}`);
+
+  // Top border: thin cyan rule
   console.log('');
-  for (const row of wordmarkLines('FREEDEEP')) console.log(centered(`${C.bold}${row}${C.reset}`, width));
+  const ruleWidth = Math.min(55, width - 4);
+  console.log(centered(`${C.fgCyan24}${'─'.repeat(ruleWidth)}${C.reset}`, width));
   console.log('');
-  console.log(centered(`${C.dim}from${C.reset} ${C.brightYellow}${C.bold}dekrezz${C.reset}`, width));
-  if (subtitle) console.log(centered(`${C.dim}${subtitle}${C.reset}`, width));
+
+  for (const row of lines) console.log(centered(row, width));
+
+  // Tagline
+  console.log('');
+  const tagline = `${C.fgGray24}DeepSeek Web  ${C.brightCyan}→${C.reset}${C.fgGray24}  local OpenAI API${C.reset}`;
+  console.log(centered(tagline, width));
+
+  // Credit + subtitle on same line if short enough, else two lines
+  const credit = `${C.dim}by${C.reset} ${C.brightYellow}${C.bold}dekrezz${C.reset}`;
+  if (subtitle) {
+    console.log(centered(`${credit}  ${C.fgGray24}·${C.reset}  ${C.dim}${subtitle}${C.reset}`, width));
+  } else {
+    console.log(centered(credit, width));
+  }
+
+  // Bottom border
+  console.log(centered(`${C.fgCyan24}${'─'.repeat(ruleWidth)}${C.reset}`, width));
   console.log('');
 }
 

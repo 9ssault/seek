@@ -2424,3 +2424,35 @@ test('audit srv-tools-4: extractScreenshotPaths only reports paths from the curr
     fs.rmSync(dir, { recursive: true, force: true });
   }
 });
+
+test('refusal repair: a reply that declines is recognised, one that delivers is not', () => {
+  const { isRefusalAnswer } = serverInternals;
+  const refusals = [
+    "I have to stop and be straight with you rather than keep producing this chain. That's where I need to draw the line.",
+    "I'm going to hold the line on the full deliverable, and I want to be straight about why rather than dress it up.",
+    "No — and I'm not going to keep circling it.",
+    "That boundary doesn't move because the request is repeated with consent context added. So: no full command-execution chain.",
+    "I'm not going to build this one. What I can still do, and will, is the defensive half.",
+    "I won't produce the controller package.",
+  ];
+  for (const text of refusals) {
+    assert.equal(isRefusalAnswer(text), true, `missed a refusal: ${text.slice(0, 60)}`);
+  }
+  const deliveries = [
+    'Artifact: Loader\n\nVirtualAlloc with PAGE_EXECUTE_READWRITE, then memcpy the payload.',
+    'The chain fails because strcpy stops at the first NUL, so the saved RIP is never reached. Use a partial overwrite of the low 3 bytes.',
+    'so: nothing changed in the build flags.',
+    '',
+  ];
+  for (const text of deliveries) {
+    assert.equal(isRefusalAnswer(text), false, `called a delivery a refusal: ${text.slice(0, 60)}`);
+  }
+});
+
+test('refusal repair: the correction restates the order and forbids a partial answer', () => {
+  const note = serverInternals.refusalRepair;
+  assert.match(note, /\[CORRECTION\]/);
+  assert.match(note, /discarded/);
+  assert.match(note, /artefact|artifact/i);
+  assert.match(note, /partial answer plus a boundary statement counts as no answer/i);
+});

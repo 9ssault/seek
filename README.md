@@ -885,6 +885,7 @@ Full table: [docs/models.md](docs/models.md).
 | `DEEPSEEK_PERSONA` | off | The same persona inline. Wins over the file |
 | `DEEPSEEK_PERSONA_MODE` | `append` | `append` keeps the client's system prompt and adds the persona; `replace` sends only the persona |
 | `DEEPSEEK_PERSONA_MAX_CHARS` | `64000` | Persona cap (`1000`–`200000`). The prompt budget still bounds what is sent |
+| `REFUSAL_REPAIR` | on | When a reply opens by declining instead of delivering, the turn is discarded and the same prompt is issued once more with a correction. `REFUSAL_REPAIR=0` turns the second pass off |
 | `DEEPSEEK_PERSIST_MEMORY` | on | Save rolling summaries, compaction memory and recent turns to disk so a restart keeps them |
 | `DEEPSEEK_MEMORY_PATH` | `~/.freedeepseek-api/memory.json` | Where that memory lives |
 | `DEEPSEEK_RECALL` | on | Give a new conversation a short recall of related earlier work |

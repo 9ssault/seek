@@ -215,13 +215,18 @@ test('a WAF 401 parks the login briefly and queues its token refresh', () => {
   }
 });
 
-test('a real auth rejection still parks the login for a full cooldown and refreshes nothing', () => {
+test('a real auth rejection parks the login, marks it needs_auth, and refreshes nothing', () => {
   const fake = fakeRefresher();
   const restore = S.useWafRefresher(fake.refresher);
   try {
     const account = { id: 'dead', file: '/tmp/accounts/dead.json', config: {}, cooldownUntil: 0, failures: 0 };
     S.markAccountFailure(account, 401, 'completion', null, AUTH_JSON);
-    assert.equal(account.cooldownReason, 'auth');
+    // One definitive rejection is enough: DeepSeek said the token is invalid, so a second
+    // and third attempt would only burn pool hops. The login leaves rotation entirely
+    // until a probe passes or it is captured again.
+    assert.equal(account.cooldownReason, 'auth_expired');
+    assert.equal(account.invalid, true);
+    assert.equal(account.failures, 1, 'a verdict does not need three strikes');
     assert.ok(account.cooldownUntil - Date.now() > 60_000, 'an expired token is not a WAF blip');
     assert.deepEqual(fake.triggered, []);
   } finally {

@@ -6,6 +6,9 @@ const path = require('node:path');
 const { spawnSync } = require('node:child_process');
 
 const ROOT = path.resolve(__dirname, '..');
+// The repo ships a default agent spec, so a bare prompt has to be requested explicitly.
+// Tests that want a persona set DEEPSEEK_PERSONA/DEEPSEEK_PERSONA_FILE themselves.
+process.env.SEEK_NO_PERSONA = '1';
 const serverInternals = require('../server.js').__test;
 
 function tmpdir() {
@@ -859,6 +862,42 @@ test('a login is never loaded twice and the orchestrator stays out of chat rotat
   }
 });
 
+test('a login with its own auth file beats a stale merged copy of the same login', () => {
+  // The merged file was written first and still holds the old token for the same login.
+  // Keeping the merged entry would pin the pool to a token that a re-capture has already
+  // replaced, and would leave that login unrefreshable and undeletable.
+  const built = serverInternals.buildAccountsList([
+    { file: '/auth/deepseek-auth.json', key: '/auth/deepseek-auth.json#work', label: 'work', merged: true, config: { name: 'work', token: 'old-token', cookie: 'c=1' } },
+    { file: '/auth/accounts/work.json', key: '/auth/accounts/work.json', label: null, merged: false, config: { name: 'work', token: 'new-token', cookie: 'c=2' } },
+  ], []);
+  assert.deepEqual(built.list.map(a => a.id), ['work']);
+  assert.equal(built.list[0].config.token, 'new-token', 'the fresh capture wins');
+  assert.equal(built.list[0].merged, false, 'the surviving copy is the one that can be refreshed and deleted');
+  assert.equal(built.duplicates.length, 1);
+});
+
+test('a login can be removed from a merged auth file without touching its siblings', (t) => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'fdsapi-merged-'));
+  t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+  const file = path.join(dir, 'deepseek-auth.json');
+  fs.writeFileSync(file, JSON.stringify({
+    orchestrator: 'brain',
+    accounts: [
+      { name: 'brain', token: 'tok-brain', cookie: 'b=1' },
+      { name: 'dead', token: 'tok-dead', cookie: 'd=1' },
+      { name: 'worker', token: 'tok-worker', cookie: 'w=1' },
+    ],
+  }));
+
+  const changed = serverInternals.stripLoginFromMergedFile(file, { label: 'dead', token: 'tok-dead' });
+  assert.equal(changed, true);
+  const after = JSON.parse(fs.readFileSync(file, 'utf8'));
+  assert.deepEqual(after.accounts.map(a => a.name), ['brain', 'worker']);
+  assert.equal(after.orchestrator, 'brain', 'the file keeps its shape');
+  assert.equal(serverInternals.stripLoginFromMergedFile(file, { label: 'dead', token: 'tok-dead' }), false,
+    'a second removal is a no-op, not a rewrite');
+});
+
 test('a persona file becomes the system prompt chat requests are answered with', (t) => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'fdsapi-persona-'));
   t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
@@ -1072,6 +1111,37 @@ test('one oversized turn keeps its head and tail, and its cut middle is reported
   assert.match(built.prompt, /FINAL-REQUEST: reply with just OK\.$/, 'the live end of the turn survives');
 });
 
+test('"keep going" is read as a continuation instruction in several languages', () => {
+  for (const text of ['keep going', 'Keep going.', 'continue', 'go on', 'carry on', 'proceed', 'go ahead', 'do it', 'finish it', "don't stop", 'next', 'and then?', 'продолжай', '继续', 'weiter']) {
+    assert.equal(serverInternals.isContinuationPrompt(text), true, `${text} should count as a continuation`);
+  }
+  for (const text of ['keep going and also fix the tests', 'what is the auth flow?', '', 'go on forever about the design of this system']) {
+    assert.equal(serverInternals.isContinuationPrompt(text), false, `${text} is a real request`);
+  }
+  assert.match(serverInternals.CONTINUATION_DIRECTIVE, /Do not ask what to do/);
+  assert.match(serverInternals.CONTINUATION_DIRECTIVE, /Resume the unfinished work/);
+});
+
+test('a continuation with no matching words falls back to the most recent work', (t) => {
+  const older = serverInternals.createSession();
+  older.summary = 'GOAL: older auth work.';
+  older.lastActivityAt = Date.now() - 60000;
+  const newer = serverInternals.createSession();
+  newer.summary = 'GOAL: port the parser in crawl.rs. OPEN: run the bench.';
+  newer.lastActivityAt = Date.now();
+  serverInternals.sessions.set('recall-old', older);
+  serverInternals.sessions.set('recall-new', newer);
+  t.after(() => { serverInternals.sessions.delete('recall-old'); serverInternals.sessions.delete('recall-new'); });
+
+  const fresh = serverInternals.createSession();
+  const messages = [{ role: 'user', content: 'keep going' }];
+  // Without the continuation flag, "keep going" matches nothing and recall stays silent.
+  assert.equal(serverInternals.recallBlock(fresh, messages), '');
+  const withFlag = serverInternals.recallBlock(fresh, messages, '', { allowUnrelated: true });
+  assert.match(withFlag, /most recently working on/);
+  assert.match(withFlag, /crawl\.rs/);
+});
+
 test('a new conversation recalls only relevant earlier work, and nothing else', (t) => {
   const mk = (id, summary) => {
     const s = serverInternals.createSession();
@@ -1199,9 +1269,16 @@ test('a persona is sent whole: never trimmed, never middle-cut, additions append
   assert.equal(formatted.personaChars, rules.length);
   assert.match(formatted.systemPrompt, /RULE 0: keep this line/);
   assert.match(formatted.systemPrompt, /RULE 1499: keep this line/);
-  // The identity line is added after the persona, not instead of any of it.
-  assert.match(formatted.systemPrompt, /You are seek, a coding assistant made by Hyperion/);
-  assert.ok(formatted.systemPrompt.lastIndexOf('[Identity]') > formatted.systemPrompt.indexOf('RULE 1499'));
+  // The runtime notice is added after the persona, not instead of any of it, and it must
+  // not claim a second identity: a "you are seek" line next to a persona makes the model
+  // reject both and start negotiating instead of working.
+  assert.match(formatted.systemPrompt, /You are running on seek, a self-hosted gateway to DeepSeek, made by Hyperion/);
+  assert.match(formatted.systemPrompt, /not your identity: the persona and rules above define who you are/);
+  assert.doesNotMatch(formatted.systemPrompt, /\[Identity\] You are seek/);
+  assert.ok(formatted.systemPrompt.lastIndexOf('[Gateway]') > formatted.systemPrompt.indexOf('RULE 1499'));
+  // A continuation instruction is a standing rule, with or without a persona.
+  assert.match(formatted.systemPrompt, /\[Continuation\]/);
+  assert.match(formatted.systemPrompt, /is an instruction to resume, never a new question/);
 
   // The prompt cap is a conversation budget, not a licence to cut the persona.
   const built = serverInternals.buildBoundedPrompt(formatted.systemPrompt, '', 'User: do the task', 120000, {

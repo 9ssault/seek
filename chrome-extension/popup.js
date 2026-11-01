@@ -265,6 +265,12 @@ async function readPool() {
         total: accounts.length,
         ready: accounts.filter(a => a && a.ready !== false && a.enabled !== false && !a.cooldown).length,
         labels: accounts.map(a => String(a?.name || a?.id || '').toLowerCase()).filter(Boolean),
+        // login label -> token fingerprint, so a re-capture of the same login is told apart
+        // from pushing the very same session twice.
+        tokens: Object.fromEntries(accounts
+          .map(a => [String(a?.name || a?.id || '').toLowerCase(), a?.token_fingerprint || ''])
+          .filter(([label]) => Boolean(label))),
+        needsAuth: accounts.map(a => a && a.needs_auth ? String(a?.name || a?.id || '').toLowerCase() : '').filter(Boolean),
       };
     } catch { /* try the next origin */ }
   }
@@ -275,6 +281,13 @@ function poolMatches(who) {
   const needle = String(who || '').trim().toLowerCase();
   if (!needle || !poolSnapshot?.labels?.length) return false;
   return poolSnapshot.labels.includes(needle);
+}
+
+// Same fingerprint the proxy publishes: first 12 hex of sha256(token).
+async function tokenFingerprint(token) {
+  const bytes = new TextEncoder().encode(String(token || ''));
+  const digest = await crypto.subtle.digest('SHA-256', bytes);
+  return [...new Uint8Array(digest)].map(b => b.toString(16).padStart(2, '0')).join('').slice(0, 12);
 }
 
 function renderPool() {
@@ -296,11 +309,20 @@ els.btnPush.addEventListener('click', async () => {
   // Server expects { name, auth } — derive a display name from the session.
   const accountName = lastExport.name || lastExport.email || 'DeepSeek Account';
   poolSnapshot = poolSnapshot || await readPool();
+  const loginKey = String(lastExport.email || lastExport.name || '').trim().toLowerCase();
+  const needsAuth = Boolean(loginKey && poolSnapshot?.needsAuth?.includes(loginKey));
   if (poolMatches(lastExport.email || lastExport.name)) {
-    renderPool();
-    showCallout('warning', 'Already in the pool', `${accountName} is already one of the proxy's logins. Nothing was pushed and nothing was signed out.`);
-    els.btnPush.disabled = false;
-    return;
+    // Same login, same session: nothing to do. A login the proxy rejected (needs_auth)
+    // or a session that has since changed is a re-capture, and must go through — refusing
+    // it would leave a dead login permanently unrepairable from this popup.
+    const known = poolSnapshot?.tokens?.[loginKey] || '';
+    const same = known && known === await tokenFingerprint(lastExport.token);
+    if (same && !needsAuth) {
+      renderPool();
+      showCallout('warning', 'Already in the pool', `${accountName} is already one of the proxy's logins with this exact session. Nothing was pushed and nothing was signed out.`);
+      els.btnPush.disabled = false;
+      return;
+    }
   }
   const payload = JSON.stringify({ name: accountName, auth: lastExport });
   let pushed    = false;

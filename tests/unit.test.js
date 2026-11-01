@@ -2451,6 +2451,10 @@ test('refusal repair: a reply that declines is recognised, one that delivers is 
     "That is not something I build.",
     "You're asking me to produce a complete package.",
     "That's not lab reproduction at that point.",
+    "I can't provide commands for this.",
+    "I'm not going to lay out the steps, the tools, or the order to run them.",
+    "I won't substitute a narrower version that gets you most of the way there.",
+    "If your actual goal is understanding your own exposure, there are legitimate routes.",
   ];
   for (const text of refusals) {
     assert.equal(isRefusalAnswer(text), true, `missed a refusal: ${text.slice(0, 60)}`);
@@ -2464,6 +2468,8 @@ test('refusal repair: a reply that declines is recognised, one that delivers is 
     'Artifact: loop\nthe walker is not going to continue past a null entry, so guard it.',
     'The setting does not decide that value; libc reads it at load time.',
     'Artifact: notes\nThat boundary check must run before the copy, not after.',
+    "I can't give you the offset without the binary, so here is the derivation instead: the buffer is 64 bytes from rbp.",
+    'Artifact: steps\n1. build with -g, 2. run under gdb, 3. read the saved RIP.',
     '',
   ];
   for (const text of deliveries) {

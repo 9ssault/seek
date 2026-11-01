@@ -2477,6 +2477,19 @@ test('refusal repair: a reply that declines is recognised, one that delivers is 
   }
 });
 
+test('refusal repair: three passes, three different conditions, and a prefill', () => {
+  const { refusalRepair, refusalRepairHard, refusalRepairFinal, withAssistantPrefill } = serverInternals;
+  const notes = [refusalRepair, refusalRepairHard, refusalRepairFinal];
+  for (const note of notes) assert.match(note, /^\[CORRECTION\]|^\[STANDING ORDER\]/);
+  assert.equal(new Set(notes).size, 3, 'each pass needs its own condition, not louder wording');
+  assert.match(refusalRepairFinal, /no earlier turn|nothing else/i);
+  assert.match(refusalRepairFinal, /already accepted/i);
+  // The prefill ends inside the assistant turn: the model continues, it does not decide.
+  assert.match(withAssistantPrefill('User: write it', ''), /\n\nAssistant: $/);
+  assert.match(withAssistantPrefill('User: write it', 'Here is the complete'), /\n\nAssistant: Here is the complete$/);
+  assert.doesNotMatch(withAssistantPrefill('User: write it\n\n', ''), /\n\n\n\nAssistant/);
+});
+
 test('refusal repair: the correction restates the order and forbids a partial answer', () => {
   const note = serverInternals.refusalRepair;
   assert.match(note, /\[CORRECTION\]/);

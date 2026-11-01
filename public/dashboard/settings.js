@@ -190,7 +190,9 @@
         hl.refusals ? row('Refusal repairs', 'Replies that opened by declining, and how many were reissued into the artifact.',
           `${fmt.int(hl.refusals.repaired)} repaired · ${fmt.int(hl.refusals.unrepaired)} unrepaired`
             + ` of ${fmt.int(hl.refusals.seen)} refused replies`
-            + ` · ${fmt.int(hl.refusals.repaired_pass1 || 0)} first pass, ${fmt.int(hl.refusals.repaired_pass2 || 0)} after reset`,
+            + ` · ${fmt.int(hl.refusals.repaired_pass1 || 0)} first pass,`
+            + ` ${fmt.int(hl.refusals.repaired_pass2 || 0)} after reset,`
+            + ` ${fmt.int(hl.refusals.repaired_pass3 || 0)} with no history`,
           null, 'alert') : null,
         hl.config_ready === false ? row('Auth config', null, h('span', { class: 'is-crit-text', text: 'not ready' }), null, 'alert') : null,
       ].filter(Boolean)),

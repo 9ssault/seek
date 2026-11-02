@@ -83,3 +83,14 @@ test('agent rows carry no file/proxy/model chain; channel and mode choices read 
     assert.match(agents, new RegExp(`cfgSection\\('${title}', '[a-z-]+', '[a-z-]+'`), `${title} has no icon`);
   }
 });
+
+test('a cookie-only login is not reported as a missing token', () => {
+  const accounts = fs.readFileSync(path.join(DASHBOARD_DIR, 'accounts.js'), 'utf8');
+  // Claude and Grok authenticate with the jar; only DeepSeek has a bearer token.
+  assert.match(accounts, /const jarOnly = a\.provider === 'claude' \|\| a\.provider === 'grok'/);
+  assert.match(accounts, /not used by this upstream/);
+  assert.match(accounts, /claude\.ai signs every request with this cookie jar/);
+  assert.match(accounts, /grok\.com signs every request with this cookie jar/);
+  // The DeepSeek branch still reports a genuinely missing token.
+  assert.match(accounts, /a\.credentials\.token \? okMark\('present'\) : h\('span', \{ class: 'is-crit-text', text: 'missing' \}\)/);
+});

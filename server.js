@@ -720,8 +720,21 @@ async function runAccountHealthPass() {
                 markAccountRateLimited(account, 'heartbeat probe', probe.retryAfterSec != null ? String(probe.retryAfterSec) : null, 429, 'heartbeat');
                 continue;
             }
-            // Only a DeepSeek login has a WAF token this refresher can renew.
-            if (probe.kind === 'waf' && (account.provider || 'deepseek') === 'deepseek') maybeAutoRefreshWaf(account, 401, probe.detail || 'waf');
+            if (probe.kind === 'waf') {
+                // Only a DeepSeek login has a WAF token this refresher can renew. A Claude
+                // or Grok jar just needs the challenge to expire, so it gets a short
+                // cooldown instead of being called dead.
+                if ((account.provider || 'deepseek') === 'deepseek') maybeAutoRefreshWaf(account, 401, probe.detail || 'waf');
+                else {
+                    account.cooldownUntil = Math.max(account.cooldownUntil || 0, Date.now() + WAF_TRANSIENT_COOLDOWN_MS);
+                    account.cooldownReason = 'waf';
+                    if (account.invalid === true) {
+                        account.invalid = false;
+                        broadcastSse('accounts', { reason: 'waf_challenge', account: account.id });
+                        console.log(`[health] account ${account.id} answered a Cloudflare challenge, not an auth rejection — kept in the pool.`);
+                    }
+                }
+            }
             await new Promise(resolve => setTimeout(resolve, HEALTH_PROBE_BUSY_GAP_MS));
         }
     } finally {
@@ -2292,10 +2305,22 @@ function markClaudeFailure(account, status, detail = '', retryAfter = null) {
         markAccountRateLimited(account, detail, retryAfter, 429, 'claude');
         return;
     }
+    // A Cloudflare challenge (403 "Just a moment…") is not a rejected cookie: the jar is
+    // still valid and the next request, made from a context Cloudflare accepts, works.
+    // Treating it as auth would park a good login for an hour and tell the user to
+    // re-capture a session that never expired.
+    const wafChallenge = /just a moment|cf-chl|cloudflare|captcha/i.test(String(detail || ''));
+    if (wafChallenge && status !== 401) {
+        countAccountFailure(account, 'waf', status, detail);
+        account.cooldownUntil = Math.max(account.cooldownUntil || 0, Date.now() + WAF_TRANSIENT_COOLDOWN_MS);
+        account.cooldownReason = 'waf';
+        console.log(`[account:${account.id}] Claude answered a Cloudflare challenge (HTTP ${status}) — short cooldown, the cookie itself is untouched.`);
+        return;
+    }
     if (status === 401 || status === 403) {
         countAccountFailure(account, 'auth', status, detail);
-        // claude.ai answers 401 for a cookie jar that was rotated out by another login
-        // and 403 for a Cloudflare challenge; neither recovers by waiting.
+        // claude.ai answers 401 for a cookie jar that was rotated out by another login;
+        // that one does not recover by waiting.
         account.invalid = true;
         account.cooldownUntil = Math.max(account.cooldownUntil || 0, Date.now() + Math.max(DEFAULT_ACCOUNT_COOLDOWN_MS, 60 * 60 * 1000));
         account.cooldownReason = 'auth_expired';
@@ -8227,6 +8252,7 @@ module.exports = {
         providerHasReadyAccount,
         BRIDGE_MODELS,
         hasClaudeAccount,
+        markClaudeFailure,
         hasGrokAccount,
         detectProviderOf,
         adminImportAccount,

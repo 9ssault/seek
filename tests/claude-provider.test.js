@@ -236,3 +236,36 @@ test('the store prefers the shared directory, honours a legacy one, and never in
     fs.rmSync(root, { recursive: true, force: true });
   }
 });
+
+// A Cloudflare challenge is the single most common false "your login is dead" report:
+// claude.ai answers 403 with a "Just a moment…" page when it wants a browser check, and
+// the cookie is still perfectly valid. It must read as `waf`, never as `auth`.
+test('a Cloudflare challenge is a retryable block, not a rejected cookie', async () => {
+  const challenge = '<!DOCTYPE html><html><head><title>Just a moment...</title></head></html>';
+  const probe = await claudeWeb.probeLogin({ cookie: 'sessionKey=sk-ant-ok' }, {
+    fetchImpl: async () => new Response(challenge, { status: 403, headers: { 'content-type': 'text/html' } }),
+  });
+  assert.equal(probe.ok, false);
+  assert.equal(probe.kind, 'waf');
+  assert.equal(probe.waf, true);
+
+  // A real 401 is still an auth failure.
+  const dead = await claudeWeb.probeLogin({ cookie: 'sessionKey=sk-ant-dead' }, {
+    fetchImpl: async () => new Response('{"error":{"type":"authentication_error"}}', { status: 401 }),
+  });
+  assert.equal(dead.kind, 'auth');
+  assert.equal(dead.waf, false);
+});
+
+test('a Cloudflare-challenged Claude turn cools down without being marked dead', () => {
+  const { markClaudeFailure } = require('../server.js').__test;
+  const account = { id: 'cl', provider: 'claude', config: { cookie: 'sessionKey=x' }, cooldownUntil: 0, failures: 0 };
+  markClaudeFailure(account, 403, 'Claude answered HTTP 403: <title>Just a moment...</title>');
+  assert.notEqual(account.invalid, true, 'a challenge must not mark the login dead');
+  assert.equal(account.cooldownReason, 'waf');
+  assert.ok(account.cooldownUntil > Date.now(), 'it still backs off');
+
+  const dead = { id: 'cl2', provider: 'claude', config: { cookie: 'sessionKey=y' }, cooldownUntil: 0, failures: 0 };
+  markClaudeFailure(dead, 401, 'Claude answered HTTP 401: authentication_error');
+  assert.equal(dead.invalid, true, 'a real 401 does mark it dead');
+});

@@ -23,6 +23,7 @@
   <section class="provider-switch" role="tablist" aria-label="Provider">
     <button type="button" class="provider-btn is-active" role="tab" aria-selected="true" data-provider="deepseek">DeepSeek</button>
     <button type="button" class="provider-btn" role="tab" aria-selected="false" data-provider="claude">Claude</button>
+    <button type="button" class="provider-btn" role="tab" aria-selected="false" data-provider="grok">Grok</button>
   </section>
 
   <!-- Google Sign-In banner (shown when not signed in) -->
@@ -101,7 +102,7 @@
       <button type="button" id="btnPasteSave" class="btn btn-secondary">
         <span class="btn-label">Use this cookie</span>
       </button>
-      <span class="paste-hint">claude.ai → DevTools → Application → Cookies → copy <code>sessionKey</code></span>
+      <span class="paste-hint" id="pasteHint">claude.ai → DevTools → Application → Cookies → copy <code>sessionKey</code></span>
     </div>
   </section>
 

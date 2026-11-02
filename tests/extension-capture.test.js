@@ -176,7 +176,7 @@ test('the sign-out toggle is on by default, persisted, and gates the push sign-o
   const popup = fs.readFileSync(path.join(ROOT, 'chrome-extension', 'popup.js'), 'utf8');
   assert.match(html, /<input type="checkbox" id="chkSignOut" checked>/, 'on by default');
   assert.match(popup, /const SIGN_OUT_KEY = 'sign_out_after_push'/);
-  assert.match(popup, /if \(res\.status === 201 && signOutAfterPush && provider === 'deepseek'\)/, 'an unchecked toggle keeps the session, and a Claude push never signs the browser out of claude.ai');
+  assert.match(popup, /if \(res\.status === 201 && signOutAfterPush\) \{/, 'the toggle gates the sign-out for every provider');
   assert.match(popup, /chrome\.storage\.local\.set\(\{ \[SIGN_OUT_KEY\]: signOutAfterPush \}\)/, 'the choice persists');
 });
 
@@ -191,8 +191,8 @@ test('the popup reports the capture source and the verification verdict', () => 
 
 test('the push signs the browser out only for a newly created account', () => {
   const popup = fs.readFileSync(path.join(ROOT, 'chrome-extension', 'popup.js'), 'utf8');
-  assert.match(popup, /if \(res\.status === 201 && signOutAfterPush && provider === 'deepseek'\)/, 'only a 201 means the account was added');
-  assert.match(popup, /send\('signOut'\)/);
+  assert.match(popup, /if \(res\.status === 201 && signOutAfterPush\) \{/, 'only a 201 means the account was added');
+  assert.match(popup, /send\('signOut', \{ provider \}\)/);
   assert.match(popup, /Pushed and signed out/);
 });
 
@@ -207,8 +207,8 @@ test('the extension requests the webRequest permission its header capture needs'
 test('the popup refuses to export a rejected capture', () => {
   const popup = fs.readFileSync(path.join(ROOT, 'chrome-extension', 'popup.js'), 'utf8');
   assert.match(popup, /source\._verified === false/);
-  assert.match(popup, /Token rejected by DeepSeek/);
-  assert.match(popup, /const ready\s+= \(claude \? cookieHasSessionKey\(auth\.cookie\) : !!\(auth\.token && auth\.cookie\)\) && !rejected/);
+  assert.match(popup, /`\$\{host\} rejected this session`/);
+  assert.match(popup, /const ready\s+= \(claude \? cookieHasJarKey\(auth\.cookie\) : !!\(auth\.token && auth\.cookie\)\) && !rejected/);
 });
 
 test('a claude.ai capture keeps the cookie jar and verifies it against the real login', async () => {
@@ -388,11 +388,11 @@ test('a pasted jar is verified and stored through the same key as a capture', as
   });
   const send = messageSender(env);
 
-  const refused = await send({ action: 'setClaudeCookie', cookie: 'lastActiveOrg=only' });
+  const refused = await send({ action: 'setJarCookie', provider: 'claude', cookie: 'lastActiveOrg=only' });
   assert.equal(refused.success, false);
   assert.match(refused.error, /no sessionKey/);
 
-  const ok = await send({ action: 'setClaudeCookie', cookie: 'sessionKey=sk-ant-paste; cf_clearance=cf' });
+  const ok = await send({ action: 'setJarCookie', provider: 'claude', cookie: 'sessionKey=sk-ant-paste; cf_clearance=cf' });
   assert.equal(ok.success, true);
   assert.equal(ok.auth.provider, 'claude');
   assert.equal(ok.auth.org, 'org-9');
@@ -413,8 +413,8 @@ test('the Claude tab offers a paste path for a jar the cookies API cannot see', 
   const popup = fs.readFileSync(path.join(ROOT, 'chrome-extension', 'popup.js'), 'utf8');
   assert.match(html, /id="pasteSection"/);
   assert.match(html, /id="pasteCookie"/);
-  assert.match(popup, /els\.pasteSection\.hidden = provider !== 'claude'/);
-  assert.match(popup, /send\('setClaudeCookie', \{ cookie \}\)/);
+  assert.match(popup, /els\.pasteSection\.hidden = !jarInfo\(\)/);
+  assert.match(popup, /send\('setJarCookie', \{ provider, cookie \}\)/);
 });
 
 test('every extension file still parses', () => {
@@ -433,7 +433,7 @@ test('a capture can be pushed without a second press, and the choice persists', 
 
 test('a stored capture from the other provider is never painted as this one', () => {
   const popup = fs.readFileSync(path.join(ROOT, 'chrome-extension', 'popup.js'), 'utf8');
-  assert.match(popup, /const capturedAs = raw\.provider === 'claude' \? 'claude'/);
+  assert.match(popup, /const capturedAs = JAR_PROVIDERS\[raw\.provider\] \? raw\.provider/);
   assert.match(popup, /const source = capturedAs && capturedAs !== provider \? \{\} : raw/);
   assert.match(popup, /An older background worker that/);
 });

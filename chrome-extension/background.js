@@ -16,11 +16,25 @@ if (typeof chrome === 'undefined' && typeof browser !== 'undefined') {
 
 const STORAGE_KEY   = 'deepseek_auth';
 const CLAUDE_KEY    = 'claude_auth';
+const GROK_KEY      = 'grok_auth';
 const DEFAULT_WASM  = 'https://fe-static.deepseek.com/chat/static/sha3_wasm_bg.7b9ca65ddd.wasm';
 const TOKEN_KEYS    = ['userToken', 'token', 'auth_token', 'access_token', 'accessToken'];
 const DEEPSEEK_CHAT = 'https://chat.deepseek.com';
 const CLAUDE_CHAT   = 'https://claude.ai';
 const CLAUDE_ORGS   = '/api/organizations';
+const GROK_CHAT     = 'https://grok.com';
+const GROK_SESSION  = '/api/auth/session';
+
+// One place that maps a provider to where its capture lives, so export, forget and push
+// can never disagree about which key a login belongs to.
+function storageKeyFor(provider) {
+  if (provider === 'claude') return CLAUDE_KEY;
+  if (provider === 'grok') return GROK_KEY;
+  return STORAGE_KEY;
+}
+
+// Which cookie proves the login, per cookie-only upstream.
+const JAR_SESSION_COOKIE = { claude: 'sessionKey', grok: 'sso' };
 const USERS_PATH    = '/api/v0/users/current';
 const POW_PATH      = '/api/v0/chat/create_pow_challenge';
 // Headers describe the request the app itself made; older than this and the user
@@ -345,6 +359,44 @@ async function collectAndStore(tabId) {
 // owns. This is a LOCAL sign-out (cookies + page storage for deepseek.com) and it
 // deliberately makes no server-side logout call, so the token the proxy just
 // imported stays valid. Verified: the bearer authenticates with no cookie at all.
+// Sign the browser out of a cookie-only upstream after its login has been handed to the
+// proxy. Same rule as DeepSeek: it is a local sign-out (cookies and page storage), with
+// no server-side logout call, so the captured jar keeps working in the pool.
+async function signOutJar(provider) {
+  const site = provider === 'grok' ? { domain: 'grok.com', login: '/login' } : { domain: 'claude.ai', login: '/login' };
+  const found = await new Promise((resolve) => {
+    try { chrome.cookies.getAll({ domain: site.domain }, (c) => { void chrome.runtime.lastError; resolve(c || []); }); }
+    catch { resolve([]); }
+  });
+  const removed = [];
+  for (const cookie of found) {
+    if (!cookie?.name) continue;
+    const host = String(cookie.domain || '').replace(/^\./, '') || site.domain;
+    const gone = await new Promise((resolve) => {
+      chrome.cookies.remove({ url: `https://${host}${cookie.path || '/'}`, name: cookie.name, storeId: cookie.storeId }, (value) => resolve(Boolean(value)));
+    });
+    if (gone) removed.push(cookie.name);
+  }
+  // Clear whatever the page keeps, then land on the sign-in screen so the next capture
+  // starts from a page that is visibly signed out.
+  let pageCleared = false;
+  const tabs = await new Promise((resolve) => {
+    try { chrome.tabs.query({ url: `https://${site.domain}/*` }, (t) => resolve(t || [])); } catch { resolve([]); }
+  });
+  const tab = tabs[0];
+  if (tab?.id) {
+    try {
+      const results = await chrome.scripting.executeScript({
+        target: { tabId: tab.id }, world: 'MAIN',
+        func: () => { try { window.localStorage.clear(); window.sessionStorage.clear(); return true; } catch { return false; } },
+      });
+      pageCleared = results?.[0]?.result === true;
+    } catch { pageCleared = false; }
+    try { await chrome.tabs.update(tab.id, { url: `https://${site.domain}${site.login}` }); } catch { /* the tab may be gone */ }
+  }
+  return { success: true, provider, cookiesRemoved: removed.length, pageCleared, tabId: tab?.id || null };
+}
+
 async function signOutDeepSeek() {
   const cookies = await new Promise((resolve) => {
     chrome.cookies.getAll({ domain: 'deepseek.com' }, (found) => resolve(found || []));
@@ -487,6 +539,90 @@ function parsePastedJar(raw) {
   const names = cookie.split(';').map(p => p.split('=')[0].trim()).filter(Boolean);
   const sessionKey = (cookie.match(/(?:^|;\s*)sessionKey=([^;]+)/) || [])[1] || '';
   return { cookie, sessionKey, names };
+}
+
+// ─── Grok capture ───────────────────────────────────────────────────────────
+// grok.com is cookie-only too: `sso` is the session cookie, and the Cloudflare cookies
+// ride along. The same "verify before calling it a capture" rule applies.
+async function readGrokCookies() {
+  const ask = (details) => new Promise((resolve) => {
+    try {
+      chrome.cookies.getAll(details, (c) => { void chrome.runtime.lastError; resolve(c || []); });
+    } catch { resolve([]); }
+  });
+  const groups = await Promise.all([
+    ask({ domain: 'grok.com' }),
+    ask({ url: 'https://grok.com' }),
+    ask({ domain: 'x.com' }),
+    ask({}),
+  ]);
+  const byName = new Map();
+  for (const cookie of groups.flat().filter(Boolean)) {
+    if (!cookie.name || cookie.value == null) continue;
+    const domain = String(cookie.domain || '').replace(/^\./, '');
+    // grok.com signs you in with `sso`; a session started from X lives at x.com as
+    // `auth_token` + `ct0`, and grok.com honours that pair. Both shapes are captured so
+    // "I am signed in" is not answered with "no cookie found".
+    if (!/(?:^|\.)(?:grok\.com|x\.ai|x\.com|twitter\.com)$/i.test(domain)) continue;
+    const hostOnly = cookie.domain && !String(cookie.domain).startsWith('.');
+    if (byName.has(cookie.name) && !hostOnly) continue;
+    byName.set(cookie.name, cookie.value);
+  }
+  const parts = [...byName.entries()].map(([name, value]) => `${name}=${value}`);
+  return {
+    cookie: parts.join('; '),
+    sessionKey: byName.get('sso') || byName.get('sso-rw') || byName.get('auth_token') || '',
+    names: [...byName.keys()],
+    via: byName.has('sso') || byName.has('sso-rw') ? 'grok.com' : (byName.has('auth_token') ? 'x.com' : null),
+  };
+}
+
+async function verifyGrok(jar, fetchImpl = globalThis.fetch) {
+  if (!jar?.sessionKey) {
+    return { ok: false, reason: 'no_session', message: 'Not signed in to grok.com or x.com. Sign in in this tab, then read it again — or paste the sso cookie.' };
+  }
+  let response;
+  try {
+    response = await fetchImpl(`${GROK_CHAT}${GROK_SESSION}`, {
+      method: 'GET', credentials: 'include', headers: { accept: 'application/json' },
+    });
+  } catch (e) {
+    return { ok: true, unverified: true, message: `Could not verify the login (${e.message || 'offline'}).` };
+  }
+  if (response.status === 401 || response.status === 403) {
+    return { ok: false, reason: 'session_rejected', message: `grok.com rejected this session (HTTP ${response.status}). Sign in again, then read the tab.` };
+  }
+  if (!response.ok) {
+    return { ok: false, reason: 'verify_failed', message: `grok.com answered HTTP ${response.status} while verifying the login.` };
+  }
+  let json = null;
+  try { json = await response.json(); } catch { json = null; }
+  if (!json || typeof json !== 'object') return { ok: true, unverified: true, message: 'grok.com answered a non-JSON session document.' };
+  const name = json.user?.email || json.user?.name || '';
+  return { ok: true, name };
+}
+
+async function collectGrok() {
+  const jar = await readGrokCookies();
+  const check = await verifyGrok(jar);
+  const base = {
+    provider: 'grok',
+    cookie: jar.cookie,
+    _cookies: jar.names.length,
+    _cookieNames: jar.names,
+    _lastUpdated: new Date().toISOString(),
+  };
+  if (!check.ok) {
+    const detail = check.reason === 'no_session' && jar.names.length
+      ? `Not signed in to grok.com: read ${jar.names.length} cookie${jar.names.length === 1 ? '' : 's'} (${jar.names.join(', ')}) but no sso. Sign in again at grok.com, then press Read current tab.`
+      : check.message;
+    const rejected = { ...base, _verified: false, _error: detail };
+    await chrome.storage.local.set({ [GROK_KEY]: rejected });
+    return rejected;
+  }
+  const verified = { ...base, name: check.name || '', _verified: true, _unverified: Boolean(check.unverified) };
+  await chrome.storage.local.set({ [GROK_KEY]: verified });
+  return verified;
 }
 
 async function collectClaude() {
@@ -828,9 +964,10 @@ chrome.runtime.onMessage.addListener((request, _sender, sendResponse) => {
 
   // Sign the browser out of DeepSeek (called by the popup after a successful push)
   if (request.action === 'signOut') {
-    signOutDeepSeek()
-      .then((result) => answer(result))
-      .catch(fail);
+    const doSignOut = request.provider === 'claude' || request.provider === 'grok'
+      ? () => signOutJar(request.provider)
+      : signOutDeepSeek;
+    doSignOut().then((result) => answer(result)).catch(fail);
     return true;
   }
 
@@ -854,19 +991,38 @@ chrome.runtime.onMessage.addListener((request, _sender, sendResponse) => {
   // A jar the browser would not hand over, typed or pasted by the user. Verified the
   // same way a captured one is, and stored under the same key, so everything downstream
   // (export, push, recapture) cannot tell the two apart.
-  if (request.action === 'setClaudeCookie') {
+  if (request.action === 'setJarCookie' || request.action === 'setClaudeCookie') {
     (async () => {
       try {
+        const provider = request.action === 'setClaudeCookie' ? 'claude' : (request.provider === 'grok' ? 'grok' : 'claude');
+        const expected = JAR_SESSION_COOKIE[provider];
         const jar = parsePastedJar(request.cookie);
-        if (!jar.cookie) { answer({ success: false, error: 'Paste the claude.ai cookie first (sessionKey=…).' }); return; }
-        if (!jar.sessionKey) { answer({ success: false, error: `That text has no sessionKey=… pair (read: ${jar.names.join(', ') || 'none'}).` }); return; }
-        const check = await verifyClaude(jar);
-        const base = { provider: 'claude', cookie: jar.cookie, org: check.org || '', _cookies: jar.names.length, _cookieNames: jar.names, _lastUpdated: new Date().toISOString(), _source: 'pasted' };
+        if (!jar.cookie) { answer({ success: false, error: `Paste the ${provider} cookie first (${expected}=…).` }); return; }
+        if (!jar.sessionKey) { answer({ success: false, error: `That text has no ${expected}=… pair (read: ${jar.names.join(', ') || 'none'}).` }); return; }
+        const check = provider === 'grok' ? await verifyGrok(jar) : await verifyClaude(jar);
+        const base = { provider, cookie: jar.cookie, org: check.org || '', _cookies: jar.names.length, _cookieNames: jar.names, _lastUpdated: new Date().toISOString(), _source: 'pasted' };
         const record = check.ok
-          ? { ...base, name: check.organization || '', _verified: true, _unverified: Boolean(check.unverified) }
+          ? { ...base, name: check.organization || check.name || '', _verified: true, _unverified: Boolean(check.unverified) }
           : { ...base, _verified: false, _error: check.message };
-        await chrome.storage.local.set({ [CLAUDE_KEY]: record });
+        await chrome.storage.local.set({ [storageKeyFor(provider)]: record });
         answer(record._verified ? { success: true, auth: record } : { success: true, auth: record, warning: record._error });
+      } catch (e) {
+        fail(e);
+      }
+    })();
+    return true;
+  }
+
+  // Collect a grok.com cookie jar
+  if (request.action === 'collectGrok') {
+    (async () => {
+      try {
+        const auth = await collectGrok();
+        if (auth && auth._verified === false) {
+          answer({ success: false, error: auth._error || 'grok.com rejected this session.', auth });
+        } else {
+          answer({ success: true, auth });
+        }
       } catch (e) {
         fail(e);
       }
@@ -876,7 +1032,7 @@ chrome.runtime.onMessage.addListener((request, _sender, sendResponse) => {
 
   // Export previously stored auth, per provider
   if (request.action === 'export') {
-    const key = request.provider === 'claude' ? CLAUDE_KEY : STORAGE_KEY;
+    const key = storageKeyFor(request.provider);
     try {
       chrome.storage.local.get(key, (result) => {
         const err = chrome.runtime.lastError;
@@ -893,7 +1049,7 @@ chrome.runtime.onMessage.addListener((request, _sender, sendResponse) => {
   // that is not usable for that provider (a DeepSeek session sitting under the Claude key),
   // so it can never be exported or pushed as the wrong login.
   if (request.action === 'forget') {
-    const key = request.provider === 'claude' ? CLAUDE_KEY : STORAGE_KEY;
+    const key = storageKeyFor(request.provider);
     chrome.storage.local.remove(key, () => answer({ success: true }));
     return true;
   }

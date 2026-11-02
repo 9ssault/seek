@@ -517,11 +517,34 @@
     const ierr = st.inspectorErrors.get(a.id);
 
     // credentials
-    body.append(section('Credentials', h('ul', { class: 'facts' },
-      fact('Upstream', a.provider === 'claude' ? 'Claude · claude.ai web' : 'DeepSeek · chat.deepseek.com'),
-      fact('Token', a.credentials.token ? h('span', null, F.icon('check', 'icon-sm is-ok-text'), ' present') : h('span', { class: 'is-crit-text', text: 'missing' })),
-      fact('Cookie parts', fmt.int(a.credentials.cookie_count)),
-      fact('Stored', 'Values are never sent to the browser.'))));
+    // A cookie-only upstream has no bearer token, so "Token: missing" would report a
+    // healthy Claude or Grok login as broken. The jar itself is what signs the request.
+    const jarOnly = a.provider === 'claude' || a.provider === 'grok';
+    const upstream = a.provider === 'claude' ? 'Claude · claude.ai web'
+      : a.provider === 'grok' ? 'Grok · grok.com web'
+        : 'DeepSeek · chat.deepseek.com';
+    const jarParts = Number(a.credentials.cookie_count) || 0;
+    const okMark = (label) => h('span', null, F.icon('check', 'icon-sm is-ok-text'), ` ${label}`);
+    const credFacts = [fact('Upstream', upstream)];
+    if (jarOnly) {
+      credFacts.push(fact(
+        a.provider === 'claude' ? 'Session cookie' : 'Session cookie',
+        jarParts
+          ? okMark(`present · ${fmt.int(jarParts)} cookie part${jarParts === 1 ? '' : 's'}`)
+          : h('span', { class: 'is-crit-text', text: 'missing — re-add this login' }),
+      ));
+      credFacts.push(fact('Token', h('span', { class: 'meta', text: 'not used by this upstream' })));
+    } else {
+      credFacts.push(fact('Token', a.credentials.token ? okMark('present') : h('span', { class: 'is-crit-text', text: 'missing' })));
+      credFacts.push(fact('Cookie parts', fmt.int(a.credentials.cookie_count)));
+    }
+    credFacts.push(fact('Stored', 'Values are never sent to the browser.'));
+    body.append(section('Credentials', h('ul', { class: 'facts' }, ...credFacts)));
+    if (jarOnly) {
+      body.append(h('p', { class: 'meta', text: a.provider === 'claude'
+        ? 'claude.ai signs every request with this cookie jar (sessionKey plus the Cloudflare cookies). There is no bearer token to show, and none is needed.'
+        : 'grok.com signs every request with this cookie jar (the sso cookie plus the Cloudflare cookies). There is no bearer token to show, and none is needed.' }));
+    }
 
     // lane trace (1h)
     const trace = h('div', { class: 'lanes-host lanes-host-mini' });

@@ -40,6 +40,7 @@ const els = {
   signOutRow:        document.getElementById('signOutRow'),
   pasteSection:      document.getElementById('pasteSection'),
   pasteCookie:       document.getElementById('pasteCookie'),
+  pasteHint:         document.getElementById('pasteHint'),
   btnPasteSave:      document.getElementById('btnPasteSave'),
   chkAutoPush:       document.getElementById('chkAutoPush'),
   autoPushRow:       document.getElementById('autoPushRow'),
@@ -64,19 +65,44 @@ function cookieCount(cookie) {
   return String(cookie || '').split(';').map((p) => p.trim()).filter(Boolean).length;
 }
 
-function cookieHasSessionKey(cookie) {
-  return /(^|;\s*)sessionKey=[^;]+/.test(String(cookie || ''));
+// The two cookie-only upstreams. A login for either one IS its cookie jar: there is no
+// bearer token to capture, so "ready" is the presence of that site's session cookie.
+const JAR_PROVIDERS = {
+  claude: { id: 'claude', label: 'Claude', host: 'claude.ai', key: 'sessionKey', collect: 'collectClaude', file: 'claude-auth.json', account: 'Claude Account' },
+  grok:   { id: 'grok',   label: 'Grok',   host: 'grok.com',   key: 'sso',       collect: 'collectGrok',   file: 'grok-auth.json',   account: 'Grok Account' },
+};
+
+function jarInfo(p = provider) { return JAR_PROVIDERS[p] || null; }
+
+function jarCookieKey(p = provider) { return JAR_PROVIDERS[p]?.key || 'sessionKey'; }
+
+// grok.com uses `sso`, but a session started on X carries `auth_token`; either one is a
+// signed-in Grok login.
+const JAR_COOKIE_RE = {
+  claude: /(^|;\s*)sessionKey=[^;]+/,
+  grok: /(^|;\s*)(?:sso|sso-rw|auth_token)=[^;]+/,
+};
+
+function cookieHasJarKey(cookie, p = provider) {
+  const re = JAR_COOKIE_RE[p] || new RegExp(`(^|;\\s*)${jarCookieKey(p)}=[^;]+`);
+  return re.test(String(cookie || ''));
 }
 
-// A stored Claude capture is only usable if it came from the Claude collector. A record
+function cookieHasSessionKey(cookie) {
+  return cookieHasJarKey(cookie, 'claude');
+}
+
+// A stored jar capture is only usable if it came from that provider's collector. A record
 // carrying a DeepSeek field (token, _tokenSource) is a DeepSeek session that ended up
 // under the wrong key — every browser that upgraded from an older build can have one —
-// and must never be shown or exported as a claude.ai login.
-function isForeignClaudeRecord(record) {
+// and must never be shown or exported as a cookie-jar login.
+function isForeignJarRecord(record) {
   if (!record || typeof record !== 'object') return false;
-  if (record.provider === 'claude') return false;
+  if (JAR_PROVIDERS[record.provider]) return false;
   return Boolean(record.provider === 'deepseek' || record.token || record._tokenSource || record.hif_dliq);
 }
+
+function isForeignClaudeRecord(record) { return isForeignJarRecord(record); }
 
 function cookieNames(cookie) {
   return String(cookie || '').split(';')
@@ -85,10 +111,11 @@ function cookieNames(cookie) {
 }
 
 function buildAuthJson(data) {
-  // A Claude login is the cookie jar itself; there is no token to send.
-  if (provider === 'claude') {
+  // A Claude or Grok login is the cookie jar itself; there is no token to send.
+  const j = jarInfo();
+  if (j) {
     return {
-      provider: 'claude',
+      provider: j.id,
       name: data.name || '',
       cookie: String(data.cookie || '').trim(),
       org: data.org || '',
@@ -197,12 +224,14 @@ function showReloadWarning() {
 // ─── Render ─────────────────────────────────────────────────────────────────
 
 function render(data) {
-  const claude = provider === 'claude';
+  const j = jarInfo();
+  const claude = Boolean(j);
+  const host = j ? j.host : 'DeepSeek';
   // A stored capture belongs to exactly one upstream. An older background worker that
-  // ignores `provider` would hand back the DeepSeek session for a Claude tab, and
-  // painting it here would show a DeepSeek login under a Claude heading.
+  // ignores `provider` would hand back the DeepSeek session for a jar tab, and painting
+  // it here would show a DeepSeek login under a cookie-jar heading.
   const raw = data && typeof data === 'object' ? data : {};
-  const capturedAs = raw.provider === 'claude' ? 'claude'
+  const capturedAs = JAR_PROVIDERS[raw.provider] ? raw.provider
     : (raw.token || raw._tokenSource || raw.hif_dliq) ? 'deepseek' : null;
   const source = capturedAs && capturedAs !== provider ? {} : raw;
   const auth   = buildAuthJson(source);
@@ -213,7 +242,7 @@ function render(data) {
   // that capture must never be exported.
   const rejected = hasRead && source._verified === false;
   const cookieN  = cookieCount(auth.cookie);
-  const ready    = (claude ? cookieHasSessionKey(auth.cookie) : !!(auth.token && auth.cookie)) && !rejected;
+  const ready    = (claude ? cookieHasJarKey(auth.cookie) : !!(auth.token && auth.cookie)) && !rejected;
   els.checkToken.hidden = claude;
 
   // Account row
@@ -264,9 +293,9 @@ function render(data) {
   if (!hasRead) {
     showCallout(
       'warning',
-      claude ? 'Open claude.ai first' : 'Open DeepSeek first',
+      `Open ${host} first`,
       claude
-        ? 'Sign in on claude.ai in this browser, then read the current tab.'
+        ? `Sign in on ${host} in this browser, then read the current tab — or paste the cookie below.`
         : 'Sign in, then read the current tab — or use Sign in with Google below.'
     );
     return;
@@ -275,14 +304,14 @@ function render(data) {
   if (rejected) {
     showCallout(
       'error',
-      claude ? 'claude.ai rejected this session' : 'Token rejected by DeepSeek',
+      `${host} rejected this session`,
       source._error || (claude ? 'Sign in again, then read the tab.' : 'Sign in, send one short message, then collect again.')
     );
     els.googleSignInSection.hidden = claude;
   } else if (ready) {
     const who = auth.name || auth.email;
     const verified = source._verified === true && !source._unverified;
-    const upstream = claude ? 'claude.ai' : 'DeepSeek';
+    const upstream = host;
     showCallout(
       'ok',
       verified ? 'Session verified' : 'Session captured',
@@ -299,8 +328,8 @@ function render(data) {
       'Session not found',
       claude
         ? (names.length
-          ? `Read ${names.length} claude.ai cookie${names.length === 1 ? '' : 's'} (${names.join(', ')}) but no sessionKey. Sign in at claude.ai and read the tab again — or paste the cookie below.`
-          : 'Use a tab signed in to claude.ai and read it again — or paste the cookie below.')
+          ? `Read ${names.length} ${host} cookie${names.length === 1 ? '' : 's'} (${names.join(', ')}) but no ${j.key}. Sign in at ${host} and read the tab again — or paste the cookie below.`
+          : `Use a tab signed in to ${host} and read it again — or paste the cookie below.`)
         : 'Sign in to DeepSeek and try again.'
     );
     els.googleSignInSection.hidden = claude;
@@ -320,26 +349,27 @@ async function loadAuth() {
     if (!(response && response.success)) { showCallout('error', 'Could not read stored session', ''); return; }
     const stored = response.auth || {};
 
-    // The Claude key held a DeepSeek session: clear it so it cannot be exported, and
-    // say plainly what to do instead of painting someone else's login.
-    if (provider === 'claude' && isForeignClaudeRecord(stored)) {
-      await send('forget', { provider: 'claude' });
+    const j = jarInfo();
+    // The jar key held a DeepSeek session: clear it so it cannot be exported, and say
+    // plainly what to do instead of painting someone else's login.
+    if (j && isForeignJarRecord(stored)) {
+      await send('forget', { provider: j.id });
       render({});
-      showCallout('warning', 'No claude.ai session yet', 'The stored capture under Claude belonged to DeepSeek, so it was cleared. Open claude.ai, sign in, then press Read current tab.');
+      showCallout('warning', `No ${j.host} session yet`, `The stored capture under ${j.label} belonged to DeepSeek, so it was cleared. Open ${j.host}, sign in, then press Read current tab.`);
       return;
     }
 
-    // A stored jar with no sessionKey is not a login. Report the cookies that were
+    // A stored jar with no session cookie is not a login. Report the cookies that were
     // readable so a missing one is visible rather than guessed at.
-    if (provider === 'claude' && stored._lastUpdated && !cookieHasSessionKey(stored.cookie)) {
+    if (j && stored._lastUpdated && !cookieHasJarKey(stored.cookie)) {
       const names = cookieNames(stored.cookie);
       render({});
       showCallout(
         'warning',
-        'No claude.ai session yet',
+        `No ${j.host} session yet`,
         names.length
-          ? `The stored jar holds ${names.length} cookie${names.length === 1 ? '' : 's'} (${names.join(', ')}) and no sessionKey. Sign in at claude.ai and press Read current tab — or paste the cookie below.`
-          : 'Nothing was captured yet. Open claude.ai in this browser, sign in, then press Read current tab — or paste the cookie below.'
+          ? `The stored jar holds ${names.length} cookie${names.length === 1 ? '' : 's'} (${names.join(', ')}) and no ${j.key}. Sign in at ${j.host} and press Read current tab — or paste the cookie below.`
+          : `Nothing was captured yet. Open ${j.host} in this browser, sign in, then press Read current tab — or paste the cookie below.`
       );
       return;
     }
@@ -355,7 +385,7 @@ async function loadAuth() {
 els.btnCollect.addEventListener('click', async () => {
   showCallout('warning', 'Reading tab…', 'Looking for your active session.');
   try {
-    const response = await send(provider === 'claude' ? 'collectClaude' : 'collect');
+    const response = await send(jarInfo() ? jarInfo().collect : 'collect');
     if (response === undefined) {
       await checkWorkerBuild();
       showReloadWarning();
@@ -376,8 +406,8 @@ els.btnCollect.addEventListener('click', async () => {
 // on the DeepSeek shape.
 function exportReady() {
   if (!lastExport) return false;
-  return provider === 'claude'
-    ? cookieHasSessionKey(lastExport.cookie)
+  return jarInfo()
+    ? cookieHasJarKey(lastExport.cookie)
     : Boolean(lastExport.token && lastExport.cookie);
 }
 
@@ -406,7 +436,7 @@ els.btnSave.addEventListener('click', () => {
   const url  = URL.createObjectURL(blob);
   const a    = document.createElement('a');
   a.href     = url;
-  a.download = provider === 'claude' ? 'claude-auth.json' : 'deepseek-auth.json';
+  a.download = jarInfo() ? jarInfo().file : 'deepseek-auth.json';
   a.click();
   URL.revokeObjectURL(url);
   flashButton(els.btnSave, '✓ Saved');
@@ -468,7 +498,7 @@ els.btnPush.addEventListener('click', async () => {
   els.btnPush.disabled = true;
 
   // Server expects { name, provider, auth } — derive a display name from the session.
-  const accountName = lastExport.name || lastExport.email || (provider === 'claude' ? 'Claude Account' : 'DeepSeek Account');
+  const accountName = lastExport.name || lastExport.email || (jarInfo() ? jarInfo().account : 'DeepSeek Account');
   poolSnapshot = poolSnapshot || await readPool();
   const loginKey = String(lastExport.email || lastExport.name || '').trim().toLowerCase();
   const needsAuth = Boolean(loginKey && poolSnapshot?.needsAuth?.includes(loginKey));
@@ -500,13 +530,14 @@ els.btnPush.addEventListener('click', async () => {
       });
       if (res.ok) {
         pushed = true;
-        // A brand-new account was created: sign this browser out of DeepSeek so the
-        // login belongs to the proxy only, and the next capture starts clean. The
-        // imported copy keeps working because it carries its own token and cookies.
+        // A brand-new account was created: sign this browser out of that upstream so the
+        // login belongs to the proxy only and the next capture starts clean. The imported
+        // copy keeps working because it carries its own cookies.
+        const upstream = provider === 'claude' ? 'claude.ai' : provider === 'grok' ? 'grok.com' : 'DeepSeek';
         let signedOut = false;
-        if (res.status === 201 && signOutAfterPush && provider === 'deepseek') {
+        if (res.status === 201 && signOutAfterPush) {
           try {
-            const out = await send('signOut');
+            const out = await send('signOut', { provider });
             signedOut = Boolean(out && out.success);
           } catch { /* keep the push result even if sign-out fails */ }
         }
@@ -514,8 +545,8 @@ els.btnPush.addEventListener('click', async () => {
           'ok',
           signedOut ? 'Pushed and signed out' : 'Pushed to proxy',
           signedOut
-            ? `Session sent to ${base}. This browser is signed out of DeepSeek; the proxy keeps the login.`
-            : `Session sent to ${base}${provider === 'claude' ? ' as a Claude login' : ''}`
+            ? `Session sent to ${base}. This browser is signed out of ${upstream}; the proxy keeps the login.`
+            : `Session sent to ${base}${jarInfo() ? ` as a ${jarInfo().label} login` : ''}`
         );
         flashButton(els.btnPush, '✓ Pushed');
         readPool().then((pool) => { poolSnapshot = pool; renderPool(); });
@@ -644,14 +675,14 @@ els.chkAutoPush?.addEventListener('change', () => {
 els.btnPasteSave?.addEventListener('click', async () => {
   const cookie = String(els.pasteCookie.value || '').trim();
   if (!cookie) {
-    showCallout('warning', 'Nothing pasted', 'Paste the claude.ai cookie line first, then press Use this cookie.');
+    showCallout('warning', 'Nothing pasted', `Paste the ${jarInfo()?.host} cookie line first, then press Use this cookie.`);
     return;
   }
-  showCallout('warning', 'Checking the cookie…', 'Asking claude.ai who it belongs to.');
+  showCallout('warning', 'Checking the cookie…', `Asking ${jarInfo()?.host} who it belongs to.`);
   try {
-    const response = await send('setClaudeCookie', { cookie });
+    const response = await send('setJarCookie', { provider, cookie });
     if (response === undefined) { await checkWorkerBuild(); showReloadWarning(); return; }
-    if (!response?.success) { showCallout('error', 'That cookie was refused', response?.error || 'claude.ai did not accept it.'); return; }
+    if (!response?.success) { showCallout('error', 'That cookie was refused', response?.error || `${jarInfo()?.host} did not accept it.`); return; }
     render(response.auth);
     if (response.warning) {
       showCallout('warning', 'Session captured, not verified', `${response.warning} It was still stored — Push will tell you if the pool rejects it.`);
@@ -665,7 +696,7 @@ els.btnPasteSave?.addEventListener('click', async () => {
 // Switching provider swaps the stored session and every provider-specific row, so a
 // DeepSeek capture is never shown as if it were a Claude login.
 function setProvider(next) {
-  provider = next === 'claude' ? 'claude' : 'deepseek';
+  provider = JAR_PROVIDERS[next] ? next : 'deepseek';
   for (const btn of providerButtons) {
     const on = btn.dataset.provider === provider;
     btn.classList.toggle('is-active', on);
@@ -673,12 +704,16 @@ function setProvider(next) {
   }
   lastExport = null;
   hideCallout();
-  els.checkToken.hidden = provider === 'claude';
-  els.signOutRow.hidden = provider === 'claude';
+  els.checkToken.hidden = Boolean(jarInfo());
+  els.signOutRow.hidden = Boolean(jarInfo());
   els.btnCopy.disabled = true;
   els.btnSave.disabled = true;
   els.btnPush.disabled = true;
-  els.pasteSection.hidden = provider !== 'claude';
+  els.pasteSection.hidden = !jarInfo();
+  if (jarInfo()) {
+    els.pasteCookie.placeholder = `${jarInfo().key}=…; cf_clearance=…`;
+    els.pasteHint.textContent = `${jarInfo().host} → DevTools → Application → Cookies → copy ${jarInfo().key}`;
+  }
   if (inExtension()) {
     checkWorkerBuild().then((mismatch) => { if (mismatch) { showReloadWarning(); return; } loadAuth(); });
   } else {

@@ -1608,3 +1608,162 @@ a.receipt-item:hover .receipt-value { color: var(--ink); text-decoration: underl
   body { overflow: visible; }
   .scroll { position: static; mask-image: none; padding-top: 0; }
 }
+
+/* Provider label on an account row; shown only when both upstreams are loaded. */
+.provider-chip {
+  height: 18px;
+  margin-left: 8px;
+  padding: 0 7px;
+  font-size: 0.68rem;
+  letter-spacing: 0.02em;
+  text-transform: uppercase;
+  vertical-align: 1px;
+}
+
+/* Small state chips in the request log: bridge and unrepaired refusal. */
+.glyph-chip {
+  height: 16px;
+  margin-left: 4px;
+  padding: 0 5px;
+  font-size: 0.64rem;
+  letter-spacing: 0.02em;
+}
+.glyph-chip.is-warn { color: var(--warn, #a96500); }
+
+/* ------------------------------------------------------------- routing card */
+/* What the two upstreams did for each other. Bars are the request log bucketed
+   into five minutes; nothing is fetched for this card. */
+.ai-host { margin-bottom: 18px; }
+.ai-host:empty { display: none; }
+
+.ai-card {
+  padding: 16px 18px 14px;
+  border: 1px solid var(--rule);
+  border-radius: var(--r-md);
+  background: var(--surface);
+}
+
+.ai-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+  margin-bottom: 14px;
+}
+
+.ai-title {
+  margin: 0;
+  font-size: 0.95rem;
+  font-weight: 600;
+  letter-spacing: -0.01em;
+}
+
+.ai-sub {
+  margin: 3px 0 0;
+  color: var(--ink-3);
+  font-size: 0.78rem;
+}
+
+.ai-legend {
+  display: flex;
+  gap: 12px;
+  margin: 2px 0 0;
+  color: var(--ink-3);
+  font-size: 0.72rem;
+  white-space: nowrap;
+}
+
+.ai-key { display: inline-flex; align-items: center; gap: 5px; }
+.ai-key::before {
+  content: "";
+  width: 8px;
+  height: 8px;
+  border-radius: 2px;
+  background: var(--signal);
+}
+.ai-key.is-refusal::before { background: var(--warn); }
+
+.ai-metrics {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 12px;
+  margin-bottom: 14px;
+}
+
+.ai-metric {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  padding: 9px 11px;
+  border-radius: var(--r-sm);
+  background: var(--sunken);
+}
+
+.ai-metric-label {
+  color: var(--ink-3);
+  font-size: 0.71rem;
+  letter-spacing: 0.03em;
+  text-transform: uppercase;
+}
+
+.ai-metric-value {
+  font-family: var(--font-mono);
+  font-size: 0.86rem;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.ai-bars {
+  display: flex;
+  align-items: flex-end;
+  gap: 4px;
+  height: 46px;
+  margin-bottom: 12px;
+}
+
+.ai-bucket {
+  display: flex;
+  flex: 1;
+  align-items: flex-end;
+  gap: 2px;
+  height: 100%;
+}
+
+.ai-bar {
+  flex: 1;
+  min-height: 1px;
+  height: var(--h, 0%);
+  border-radius: 2px 2px 0 0;
+  background: var(--signal);
+  opacity: 0.85;
+}
+
+.ai-bar.is-refusal { background: var(--warn); }
+
+.ai-routes {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px 16px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  color: var(--ink-2);
+  font-size: 0.78rem;
+}
+
+.ai-routes li { display: inline-flex; gap: 6px; }
+.ai-routes strong { color: var(--ink); font-weight: 600; }
+.ai-empty { margin: 0; font-size: 0.78rem; }
+
+/* Provider choice in the add dialog. */
+.add-provider {
+  display: flex;
+  gap: 6px;
+  margin-bottom: 14px;
+}
+.add-provider .btn.is-active {
+  border-color: var(--signal);
+  background: var(--signal-wash);
+  color: var(--ink);
+}

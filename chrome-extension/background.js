@@ -15,9 +15,12 @@ if (typeof chrome === 'undefined' && typeof browser !== 'undefined') {
 }
 
 const STORAGE_KEY   = 'deepseek_auth';
+const CLAUDE_KEY    = 'claude_auth';
 const DEFAULT_WASM  = 'https://fe-static.deepseek.com/chat/static/sha3_wasm_bg.7b9ca65ddd.wasm';
 const TOKEN_KEYS    = ['userToken', 'token', 'auth_token', 'access_token', 'accessToken'];
 const DEEPSEEK_CHAT = 'https://chat.deepseek.com';
+const CLAUDE_CHAT   = 'https://claude.ai';
+const CLAUDE_ORGS   = '/api/organizations';
 const USERS_PATH    = '/api/v0/users/current';
 const POW_PATH      = '/api/v0/chat/create_pow_challenge';
 // Headers describe the request the app itself made; older than this and the user
@@ -385,6 +388,111 @@ async function signOutDeepSeek() {
   return { success: true, cookiesRemoved: removed.length, pageCleared, tabId: tab?.id || null };
 }
 
+// ─── Claude capture ──────────────────────────────────────────────────────────
+// The claude.ai web app authenticates with cookies only — there is no bearer token,
+// so a Claude login is the jar itself (sessionKey plus the Cloudflare cookies the
+// browser holds). The proxy stores that jar as-is and replays it.
+const CLAUDE_COOKIE_NAMES = ['sessionKey', 'cf_clearance', '__cf_bm', 'lastActiveOrg'];
+
+async function readClaudeCookies() {
+  // Three queries on purpose. `domain` and `url` cover the jars Chrome reports in the
+  // usual way; the unfiltered list catches a session cookie that the narrower queries
+  // skip (for example one stored for a claude.ai subdomain). A `getAll` that throws —
+  // no host permission yet after an update — resolves empty instead of failing the read.
+  const ask = (details) => new Promise((resolve) => {
+    try {
+      chrome.cookies.getAll(details, (c) => {
+        void chrome.runtime.lastError;
+        resolve(c || []);
+      });
+    } catch {
+      resolve([]);
+    }
+  });
+  const groups = await Promise.all([
+    ask({ domain: 'claude.ai' }),
+    ask({ url: 'https://claude.ai' }),
+    ask({}),
+  ]);
+  const byName = new Map();
+  for (const cookie of groups.flat().filter(Boolean)) {
+    if (!cookie.name || cookie.value == null) continue;
+    const domain = String(cookie.domain || '').replace(/^\./, '');
+    if (!/(?:^|\.)claude\.ai$/i.test(domain)) continue;
+    const hostOnly = cookie.domain && !String(cookie.domain).startsWith('.');
+    // Prefer a host cookie for claude.ai itself over one from a deeper subdomain.
+    if (byName.has(cookie.name) && !hostOnly) continue;
+    byName.set(cookie.name, cookie.value);
+  }
+  const parts = [...byName.entries()].map(([name, value]) => `${name}=${value}`);
+  return {
+    cookie: parts.join('; '),
+    sessionKey: byName.get('sessionKey') || '',
+    lastActiveOrg: byName.get('lastActiveOrg') || '',
+    names: [...byName.keys()],
+  };
+}
+
+// The cookie jar is the credential, so it is worth one round trip before calling a
+// capture good: a stale jar imports cleanly and then fails every request in the pool.
+// Cloudflare cookies are sent automatically because this is the same browser.
+async function verifyClaude(jar, fetchImpl = globalThis.fetch) {
+  if (!jar?.sessionKey) {
+    return { ok: false, reason: 'no_session', message: 'Not signed in to claude.ai. Sign in in this tab, then read it again.' };
+  }
+  let response;
+  try {
+    response = await fetchImpl(`${CLAUDE_CHAT}${CLAUDE_ORGS}`, {
+      method: 'GET',
+      credentials: 'include',
+      headers: { accept: 'application/json' },
+    });
+  } catch (e) {
+    return { ok: true, unverified: true, message: `Could not verify the login (${e.message || 'offline'}).` };
+  }
+  if (response.status === 401 || response.status === 403) {
+    return { ok: false, reason: 'session_rejected', message: `claude.ai rejected this session (HTTP ${response.status}). Sign in again, then read the tab.` };
+  }
+  if (!response.ok) {
+    return { ok: false, reason: 'verify_failed', message: `claude.ai answered HTTP ${response.status} while verifying the login.` };
+  }
+  let list = null;
+  try { list = await response.json(); } catch { list = null; }
+  const org = Array.isArray(list) ? (list.find((o) => o && o.uuid) || null) : null;
+  return { ok: true, org: org?.uuid || jar.lastActiveOrg || '', organization: org?.name || '' };
+}
+
+async function collectClaude() {
+  const jar = await readClaudeCookies();
+  const check = await verifyClaude(jar);
+  const base = {
+    provider: 'claude',
+    cookie: jar.cookie,
+    org: check.org || '',
+    _cookies: jar.names.length,
+    _cookieNames: jar.names,
+    _lastUpdated: new Date().toISOString(),
+  };
+  if (!check.ok) {
+    // Name what was actually readable: "no sessionKey" most often means the jar only
+    // holds a non-session cookie, and the popup can say so instead of guessing.
+    const detail = check.reason === 'no_session' && jar.names.length
+      ? `Not signed in to claude.ai: read ${jar.names.length} cookie${jar.names.length === 1 ? '' : 's'} (${jar.names.join(', ')}) but no sessionKey. Sign in again at claude.ai, then press Read current tab.`
+      : check.message;
+    const rejected = { ...base, _verified: false, _error: detail };
+    await chrome.storage.local.set({ [CLAUDE_KEY]: rejected });
+    return rejected;
+  }
+  const verified = {
+    ...base,
+    name: check.organization || '',
+    _verified: true,
+    _unverified: Boolean(check.unverified),
+  };
+  await chrome.storage.local.set({ [CLAUDE_KEY]: verified });
+  return verified;
+}
+
 const YESCAPTCHA_EXT_ID = 'jiofmdifioeejeilfkpegipdjiopiekl';
 
 // ─── Stealth injection ────────────────────────────────────────────────────────
@@ -680,11 +788,35 @@ chrome.runtime.onMessage.addListener((request, _sender, sendResponse) => {
     return true;
   }
 
-  // Export previously stored auth
+  // Collect a claude.ai cookie jar (no token, no tab script needed)
+  if (request.action === 'collectClaude') {
+    collectClaude()
+      .then((auth) => {
+        if (auth && auth._verified === false) {
+          sendResponse({ success: false, error: auth._error || 'claude.ai rejected this session.', auth });
+        } else {
+          sendResponse({ success: true, auth });
+        }
+      })
+      .catch((e) => sendResponse({ success: false, error: e.message || String(e) }));
+    return true;
+  }
+
+  // Export previously stored auth, per provider
   if (request.action === 'export') {
-    chrome.storage.local.get(STORAGE_KEY, (result) => {
-      sendResponse({ success: true, auth: result[STORAGE_KEY] || {} });
+    const key = request.provider === 'claude' ? CLAUDE_KEY : STORAGE_KEY;
+    chrome.storage.local.get(key, (result) => {
+      sendResponse({ success: true, auth: result[key] || {} });
     });
+    return true;
+  }
+
+  // Drop one provider's stored capture. The popup calls this when a key holds a record
+  // that is not usable for that provider (a DeepSeek session sitting under the Claude key),
+  // so it can never be exported or pushed as the wrong login.
+  if (request.action === 'forget') {
+    const key = request.provider === 'claude' ? CLAUDE_KEY : STORAGE_KEY;
+    chrome.storage.local.remove(key, () => sendResponse({ success: true }));
     return true;
   }
 

@@ -734,6 +734,11 @@ test('GET /admin/accounts reports every account state without leaking credential
     total: 6, ready: 1, busy: 1, cooldown: 1, disabled: 2, no_credentials: 1, can_serve: 2,
     next_ready_at: list[1].cooldownUntil,
     next_ready_in_sec: res.json.pool.next_ready_in_sec,
+    // Every login in this fixture is a DeepSeek one, so the per-provider split mirrors
+    // the totals. A mixed roster is covered by its own test.
+    by_provider: {
+      deepseek: { total: 6, ready: 1, busy: 1, cooldown: 1, disabled: 2, no_credentials: 1, can_serve: 2 },
+    },
   });
   assert.ok(res.json.pool.next_ready_in_sec > 100);
 
@@ -2269,3 +2274,92 @@ test('universal failover: an HTTP 500 error on completion rotates in-flight to A
   assert.equal(res.json?.choices?.[0]?.message?.content, 'served by B after 500 failover');
 });
 
+
+test('GET /admin/accounts splits the roster by upstream', async (t) => {
+  const dsReady = acct('ds-ready');
+  const dsCooling = acct('ds-cooling', { cooldownUntil: Date.now() + 60_000, cooldownReason: 'rate_limit' });
+  const claude = acct('cl-1', { provider: 'claude', config: { provider: 'claude', cookie: 'sessionKey=abc' } });
+  useAccounts(t, [dsReady, dsCooling, claude]);
+  const port = await startServer(t);
+
+  const res = await request(port, 'GET', '/admin/accounts');
+  assert.equal(res.status, 200, res.text);
+  assert.deepEqual(res.json.pool.by_provider.deepseek, {
+    total: 2, ready: 1, busy: 0, cooldown: 1, disabled: 0, no_credentials: 0, can_serve: 1,
+  });
+  assert.deepEqual(res.json.pool.by_provider.claude, {
+    total: 1, ready: 1, busy: 0, cooldown: 0, disabled: 0, no_credentials: 0, can_serve: 1,
+  });
+  assert.equal(res.json.pool.can_serve, 2, 'both upstreams count toward the whole roster');
+  assert.equal(res.json.pool.total, 3);
+});
+
+test('POST /admin/accounts/import accepts a claude.ai cookie jar as a Claude login', async (t) => {
+  useAccounts(t, []);
+  const dir = useAuthDir(t);
+  const port = await startServer(t);
+
+  // No `provider` field: a jar carrying sessionKey and no DeepSeek token is Claude's shape.
+  const jar = { cookie: 'sessionKey=sk-ant-SECRET; cf_clearance=cf-SECRET', org: 'org-1' };
+  let res = await request(port, 'POST', '/admin/accounts/import', { body: { name: 'Claude Main', auth: jar } });
+  assert.equal(res.status, 201, res.text);
+  assert.equal(res.json.account.provider, 'claude');
+  assert.equal(res.json.account.id, 'claude-main');
+  assert.equal(res.json.account.status, 'ready');
+  assert.equal(res.json.account.credentials.token, false);
+  assert.equal(res.json.account.credentials.cookie_count, 2);
+  assert.doesNotMatch(res.text, /SECRET/);
+
+  const file = path.join(dir, 'claude-main.json');
+  const written = JSON.parse(fs.readFileSync(file, 'utf8'));
+  assert.equal(written.provider, 'claude');
+  assert.equal(written.cookie, jar.cookie);
+  assert.equal(written.org, 'org-1');
+  assert.equal(written.name, 'Claude Main');
+  if (process.platform !== 'win32') assert.equal(fs.statSync(file).mode & 0o777, 0o600);
+
+  // The same jar under a different name is the same login, not a second one.
+  res = await request(port, 'POST', '/admin/accounts/import', { body: { name: 'Claude Two', auth: jar } });
+  assert.equal(res.status, 409, res.text);
+  assert.equal(res.json.error.type, 'duplicate_account');
+
+  // A Claude import with no cookie is refused before anything is written.
+  res = await request(port, 'POST', '/admin/accounts/import', { body: { name: 'Claude Empty', auth: { provider: 'claude' } } });
+  assert.equal(res.status, 422, res.text);
+  assert.equal(res.json.error.type, 'invalid_auth');
+  assert.deepEqual(fs.readdirSync(dir), ['claude-main.json']);
+});
+
+test('the runtime line names the upstream actually serving the turn', () => {
+  const messages = [{ role: 'user', content: 'hi' }];
+  const line = (systemPrompt) => String(systemPrompt).split('\n').find(l => l.startsWith('[Gateway]') || l.startsWith('[Identity]')) || '';
+
+  const claude = S.formatMessages(messages, null, { model: 'claude-sonnet-4-5', provider: 'claude' });
+  assert.match(line(claude.systemPrompt), /a self-hosted gateway to Claude/);
+  assert.match(line(claude.systemPrompt), /Claude Sonnet 4\.5/);
+  assert.doesNotMatch(line(claude.systemPrompt), /DeepSeek/);
+
+  // DeepSeek keeps exactly the line it had: the model is told what it runs on.
+  const deepseek = S.formatMessages(messages, null, { model: 'deepseek-v4-flash', provider: 'deepseek' });
+  assert.match(line(deepseek.systemPrompt), /a self-hosted gateway to DeepSeek/);
+});
+
+test('a Claude turn can carry its own rule file, and falls back to the shared persona', (t) => {
+  const prevInline = process.env.SEEK_PERSONA_CLAUDE;
+  const prevFile = process.env.SEEK_PERSONA_CLAUDE_FILE;
+  delete process.env.SEEK_PERSONA_CLAUDE_FILE;
+  process.env.SEEK_PERSONA_CLAUDE = 'CLAUDE ONLY RULES';
+  t.after(() => {
+    if (prevInline === undefined) delete process.env.SEEK_PERSONA_CLAUDE; else process.env.SEEK_PERSONA_CLAUDE = prevInline;
+    if (prevFile === undefined) delete process.env.SEEK_PERSONA_CLAUDE_FILE; else process.env.SEEK_PERSONA_CLAUDE_FILE = prevFile;
+  });
+
+  assert.equal(S.personaSystemPrompt('claude'), 'CLAUDE ONLY RULES');
+  assert.notEqual(S.personaSystemPrompt('deepseek'), 'CLAUDE ONLY RULES', 'the shared persona is untouched');
+
+  const messages = [{ role: 'user', content: 'hi' }];
+  const claude = S.formatMessages(messages, null, { model: 'claude-sonnet-4-5', provider: 'claude' });
+  assert.match(claude.systemPrompt, /CLAUDE ONLY RULES/);
+  const deepseek = S.formatMessages(messages, null, { model: 'deepseek-v4-flash', provider: 'deepseek' });
+  assert.doesNotMatch(deepseek.systemPrompt, /CLAUDE ONLY RULES/);
+});

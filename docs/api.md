@@ -237,10 +237,16 @@ The full field list (`AgentSummary`, `FileMeta`) is in [`public/dashboard/API.md
 | 401 | `authentication_error` | Proxy key |
 | 403 | `admin_forbidden` | `/admin/*` without a key from a non-loopback or proxied client |
 | 429 | `concurrent_chat_blocked` | Wait exceeded `DEEPSEEK_ACCOUNT_LOCK_WAIT_MS`; add another login or retry |
-| 429 | `rate_limit` | All logins in cooldown; honor `Retry-After` |
+| 429 | `rate_limit` | All logins for that provider in cooldown and the other provider has none to bridge to; honor `Retry-After` |
 | 429 | `rate_limit_error` | DeepSeek rate-limited the login and the deadline hit or the client left before failover finished; honor `Retry-After` |
-| 503 | `overloaded` / `no_auth` | Backpressure, or no `deepseek-auth.json` |
+| 503 | `overloaded` / `no_auth` | Backpressure, or neither provider has a login |
 | 504 | `request_timeout` | `DEEPSEEK_REQUEST_DEADLINE_MS` (default 120000) |
+
+A `429`/`503` from one provider is not the end of the request when the other provider has a login that can serve: the turn is retried there once, in a fresh chat, on the same-class model (`deepseek-v4-flash-thinking` ↔ `claude-sonnet-4-5`, `deepseek-v4-flash` ↔ `claude-haiku-4-5`, `claude-opus-4-1` → `deepseek-v4-flash-thinking`). A bridged response carries `x-seek-bridge: <From>-><To>; model=<id>` (plus `; dropped_images=N` when a Claude turn could not carry an attachment). The bridge is skipped for a pinned `x-account-id` and for a model id with an explicit `claude/` or `anthropic/` prefix. `SEEK_CROSS_PROVIDER_FALLBACK_OFF=1` disables it.
+
+`pool` also carries `by_provider: { deepseek: {…}, claude: {…} }` with the same counters per upstream, since a login on one side cannot serve a model on the other.
+
+The same payload, and `GET /health`, carry `bridge: { total, by_route: { "deepseek->claude": n, … }, last: { route, model, dropped_images, at } }` — how many requests one upstream answered for the other since boot. A parked pool is bridged before the first hop, so an outage on one side costs no PoW solve and no chat create on the other.
 
 ## Env
 

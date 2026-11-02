@@ -1,3 +1,9 @@
+/* The rows below set `display`, which beats the browser's bare `[hidden] { display: none }`.
+   Without this, a row marked hidden on the Claude tab stays on screen. */
+[hidden] {
+  display: none !important;
+}
+
 :root {
   color-scheme: light dark;
   --page: #f6f7fb;
@@ -431,3 +437,40 @@ h1 {
   white-space: nowrap;
 }
 .pool[data-state="on"] { border-color: #2f6f4f; color: #4ade80; }
+
+/* Provider switch: two tabs, one per upstream. */
+.provider-switch {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 4px;
+  margin-bottom: 14px;
+  padding: 3px;
+  border-radius: 11px;
+  background: var(--surface-soft);
+}
+
+.provider-btn {
+  padding: 8px 10px;
+  border: 0;
+  border-radius: 9px;
+  background: transparent;
+  color: var(--muted);
+  font: inherit;
+  font-size: 12.5px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: background-color .15s ease, color .15s ease;
+}
+
+.provider-btn:hover { color: var(--text); }
+
+.provider-btn.is-active {
+  background: var(--surface);
+  color: var(--text);
+  box-shadow: 0 1px 2px rgb(0 0 0 / .12);
+}
+
+.provider-btn:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}

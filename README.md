@@ -397,7 +397,7 @@ A long session used to end twice: the middle of the conversation was cut to fit 
 - **Memory across a rollover.** On TTL/message-depth rollover the replayed turns are folded into one rolling summary, and that summary travels with the conversation.
 - **Memory across a restart.** Summaries and the last 24 turns are written to `~/.freedeepseek-api/memory.json` (0600). A restored conversation starts a fresh upstream chat — the old one is gone — but it does not start from nothing.
 - **Recall across conversations.** A brand-new conversation gets at most 1,200 characters of the most relevant earlier summaries, matched on shared identifiers (paths, file names, flags) with at least two overlaps. Unrelated work is never injected; `DEEPSEEK_RECALL=0` turns it off.
-- **Persona.** `DEEPSEEK_PERSONA_FILE=/path/to/persona.txt` makes every request carry that text as its system prompt (`DEEPSEEK_PERSONA_MODE=replace` to drop the client's own). The file stays yours; nothing is embedded in this repository.
+- **Persona.** `DEEPSEEK_PERSONA_FILE=/path/to/persona.txt` makes every request carry that text as its system prompt (`DEEPSEEK_PERSONA_MODE=replace` to drop the client's own). The file stays yours; nothing is embedded in this repository. A Claude turn uses the same file unless `SEEK_PERSONA_CLAUDE_FILE` (or `SEEK_PERSONA_CLAUDE` inline) names another one — the two are cached separately, so alternating between upstreams does not re-read either file.
 - **The persona is sent once per chat, not once per request.** The first request of an upstream chat carries the whole file; every later turn in that chat carries one line saying the standing rules still apply, so the tokens go to the work. A loaded persona also gets a larger share of a tight prompt than the client's own system prompt (60% instead of 50%), because a half-cut rules file is worse than a dropped middle turn. `GET /health` → `persona.sent_in_full` and `persona.reminded_instead` show the split.
 - When that chat already exists, the proxy continues it with `parent_message_id`.
 - The standing system prompt and the tool list go upstream **once**. Later turns from OpenCode, Claude Code, and Codex send only the new user or tool turn.
@@ -492,6 +492,40 @@ You cannot pin a client to a chosen file. The proxy picks a free login.
 DEEPSEEK_ACCOUNT_COOLDOWN_MS=600000 npm start
 ```
 
+### Pool automation
+
+`accounts:pool` works on both providers in the same store. It never prints a token or a cookie.
+
+```bash
+npm run accounts:pool -- status        # what is loaded, per provider, and where it lives
+npm run accounts:pool -- sweep         # prove every login still works (DeepSeek PoW, Claude org list)
+npm run accounts:pool -- sweep --repair --apply   # repair first, then move the dead ones to .removed
+npm run accounts:pool -- refresh       # force a session refresh on every DeepSeek login
+npm run accounts:pool -- provision ~/logins.json --apply
+npm run accounts:pool -- watch         # sweep + repair + quarantine every 15 minutes (--no-apply to report only)
+npm run accounts:pool -- fixtures --count 20      # 20 DeepSeek + 20 Claude test logins
+```
+
+`sweep` is the one that answers "is this account still live?": one request per login that costs no generation quota, then a table of `ok` / `auth` / `ratelimit` / `waf` / `network`. A dead login is left in place unless you pass `--apply`; quarantine moves the file into `.removed` and deletes nothing.
+
+`provision` builds auth files from credentials you already hold, and verifies each one before writing it:
+
+```json
+[
+  { "name": "ds-01", "provider": "deepseek", "email": "ds01@example.com", "password": "…" },
+  { "name": "ds-02", "provider": "deepseek", "token": "…", "cookie": "…" },
+  { "name": "cl-01", "provider": "claude",   "cookie": "sessionKey=…; cf_clearance=…" }
+]
+```
+
+A DeepSeek entry with email and password is signed in through the web login endpoint, so the token is minted instead of pasted. The password is used and dropped — it is not written to the auth file unless you pass `--keep-credentials`. Without `--apply` it is a dry run: nothing is written and no password is used.
+
+`fixtures` writes a full-sized two-provider pool into `tests/fixtures/pool/` for testing rotation, cooldowns, provider routing and the dashboard. The files are marked `"_fixture": true`, hold no real credentials, are skipped by `sweep` unless you pass `--include-fixtures`, and are loaded the same way real ones are:
+
+```bash
+DEEPSEEK_AUTH_DIR=tests/fixtures/pool npm start
+```
+
 ---
 
 ## Dashboard
@@ -501,8 +535,13 @@ Open `http://127.0.0.1:9655/dashboard`. It lists every login with its state (`re
 - **Disable / Enable** a login. This is a runtime pause: in-flight work finishes, and a restart forgets it. `"enabled": false` in the auth file is the persistent switch; a login disabled in its file cannot be enabled from the dashboard.
 - **Clear cooldown** to put a cooling login back in rotation now.
 - **Reload accounts** to re-read the auth files. New files are added and deleted files are removed. A kept login keeps its cooldown and counters. A login whose token or cookie changed starts fresh.
+- **Add account** takes either shape: a DeepSeek session (`token` + `cookie`, exported by the extension) or a claude.ai cookie jar (`sessionKey` in the cookie, no token). Drop the JSON in, the dialog names the provider it found and stores it under that provider.
+- **Recapture** — the reload icon on every row, the entry in the row menu, or the button in the account panel — reopens the same dialog for one existing login. The import matches the account by name, so a rejected or rotated session is replaced in place: the id, its usage and its request history stay with the row instead of a second entry appearing for the same login.
+- **Provider picker** in the Add dialog. Choose DeepSeek or Claude before dropping a file; a recognised file switches it for you, and the submit button reports exactly what the chosen provider still needs (`sessionKey` for Claude, token + cookie for DeepSeek).
+- **Upstream filter** next to the state chips narrows the table to one pool, and every row carries its provider label.
+- **Routing card** above the table: logins able to serve per upstream, how many logged requests the other upstream answered, how many replies stayed refusals after every repair pass, the lifetime bridge total with the last move, and a five-minute-per-bucket chart of both. It is computed from the request log the page already holds, so it adds no endpoint and no server state.
 
-To add a login, import it and press Reload:
+To add a login from a terminal:
 
 ```bash
 npm run auth:import -- --input ~/Downloads/deepseek-auth.json --output ./accounts/worker-3.json
@@ -871,7 +910,13 @@ curl http://127.0.0.1:9655/v1/chat/completions \
   -d '{"model":"claude-sonnet-4-5","messages":[{"role":"user","content":"hello"}]}'
 ```
 
-The login is a cookie jar (`sessionKey` plus the Cloudflare cookies the browser earned), captured from a real browser session; there is no password input and nothing is typed into a chat. A rejected cookie marks that login `needs_auth` in the dashboard instead of failing every request that picks it.
+The login is a cookie jar (`sessionKey` plus the Cloudflare cookies the browser earned), captured from a real browser session; there is no password input and nothing is typed into a chat. Both the dashboard (**Add account**, or **Recapture…** on an existing row) and the extension (switch the popup to **Claude**, then *Read current tab* → *Push to Proxy*) accept that jar; the extension verifies it against `claude.ai/api/organizations` before it can be exported, and never signs the browser out of claude.ai. A rejected cookie marks that login `needs_auth` in the dashboard instead of failing every request that picks it.
+
+A Claude turn receives exactly the same prompt as a DeepSeek turn — the same persona, the same tool adapter, and the same standing rules — and the only line that differs is the runtime line, which names the upstream actually serving the turn. A reply that opens as a refusal is repaired the same way on both transports: three passes on the same upstream, then one more on the other, with the equivalent model (see the bridge below), so a prompt that one provider declines is still answered by the other.
+
+**Both upstreams, one request.** When every login on the requested side is parked — all cooling down, all rejected, or none loaded — the turn is answered by the other provider instead of coming back as a `429`, mapped to a model of the same class: `deepseek-v4-flash-thinking` ↔ `claude-sonnet-4-5`, `deepseek-v4-flash` ↔ `claude-haiku-4-5`, `claude-opus-4-1` → `deepseek-v4-flash-thinking`. It happens once per request, in a fresh chat with the full transcript, and the console names the move. A pool with nothing that can serve is bridged before the first hop, so an outage on one side costs no PoW solve and no chat create on the other. `GET /health` and the accounts view report how often it happened (`bridge.total`, `bridge.by_route`).
+
+A bridged answer says so in an `x-seek-bridge` response header (`DeepSeek->Claude; model=claude-haiku-4-5`, plus `dropped_images=2` when a Claude turn could not carry an attachment). The same header carries `reason=refusal_repair` when the move was a refusal repair rather than a parked pool: when a reply still opens as a refusal after all three local passes, the other upstream gets one final pass with the equivalent model in a clean chat. That pass is skipped for a request carrying an image (the other transport cannot carry it), and it is counted in the bridge totals like any other move. It does not happen when you pinned a login with `x-account-id` or when the model id started with an explicit `claude/` or `anthropic/` prefix — that prefix is an instruction, so its failure names the missing Claude account instead of quietly answering with DeepSeek. `SEEK_CROSS_PROVIDER_FALLBACK_OFF=1` turns the bridge off and restores the plain `429`.
 
 ---
 
@@ -911,6 +956,7 @@ The login is a cookie jar (`sessionKey` plus the Cloudflare cookies the browser 
 | `SEEK_HOME` | `~/.seek` | Where that shared store lives |
 | `CLAUDE_BASE_URL` | `https://claude.ai` | Claude web origin (a test fixture points it elsewhere) |
 | `CLAUDE_TIMEZONE` | `Europe/London` | Timezone sent with a Claude turn |
+| `SEEK_CROSS_PROVIDER_FALLBACK_OFF` | off | If `1`, a request whose provider has no live login returns `429` instead of being answered by the other upstream |
 | `DEEPSEEK_MAX_PROMPT_CHARS` | `120000` | Cap on what is sent upstream. Minimum 16000 |
 | `DEEPSEEK_SUMMARY_COMPACT` | on | When a prompt must be cut, summarize the dropped middle instead of discarding it |
 | `DEEPSEEK_SUMMARY_ACCOUNT` | any idle login | Pin the summarizer to one login. By default it takes a login that is not serving a chat |
@@ -920,6 +966,8 @@ The login is a cookie jar (`sessionKey` plus the Cloudflare cookies the browser 
 | `DEEPSEEK_PERSONA_FILE` | off | Text file whose contents are added to the system prompt of every request |
 | `DEEPSEEK_PERSONA` | off | The same persona inline. Wins over the file |
 | `DEEPSEEK_PERSONA_MODE` | `append` | `append` keeps the client's system prompt and adds the persona; `replace` sends only the persona |
+| `SEEK_PERSONA_CLAUDE_FILE` | off | A separate rule file for Claude turns. Without it Claude uses the persona above |
+| `SEEK_PERSONA_CLAUDE` | off | The same Claude persona inline. Wins over the file |
 | `DEEPSEEK_PERSONA_MAX_CHARS` | `64000` | Persona cap (`1000`–`200000`). The prompt budget still bounds what is sent |
 | `REFUSAL_REPAIR` | on | When a reply opens by declining instead of delivering, the turn is discarded and the same prompt is issued once more with a correction. `REFUSAL_REPAIR=0` turns the second pass off |
 | `DEEPSEEK_PERSIST_MEMORY` | on | Save rolling summaries, compaction memory and recent turns to disk so a restart keeps them |

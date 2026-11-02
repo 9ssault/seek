@@ -18,6 +18,7 @@
     root: null,
     els: {},
     filter: 'all',
+    provider: 'all',
     query: '',
     rows: new Map(),       // id -> { tr, sig }
     pending: new Map(),    // id -> action verb
@@ -150,6 +151,9 @@
     items.push({ label: 'Clear cooldown', icon: 'clear-cooldown', disabled: account.status !== 'cooldown', reason: 'Not cooling down', run: () => action(account, 'clear-cooldown') });
     items.push({ label: 'Test token', icon: 'probe', disabled: !account.credentials?.token, reason: 'No token', run: () => action(account, 'probe') });
     items.push({ label: 'Refresh token', icon: 'refresh', disabled: !account.credentials?.token, reason: 'No token', run: () => action(account, 'refresh') });
+    // A rejected login is repaired by pasting a fresh capture over it. The import
+    // matches on the name, so the id, usage and history stay with the same row.
+    items.push({ label: account.provider === 'claude' ? 'Recapture Claude login…' : 'Recapture session…', icon: 'reload', run: () => openAdd(trigger, { account }) });
     if (account.disabled_by !== 'file') items.push({ label: 'Disable in file', icon: 'lock', run: () => action(account, 'file-disable') });
     items.push('sep');
     items.push({ label: 'View requests', icon: 'requests', run: () => F.navigate('requests', '', { account: account.id }) });
@@ -191,6 +195,7 @@
   }
 
   function matches(a) {
+    if (st.provider !== 'all' && (a.provider || 'deepseek') !== st.provider) return false;
     if (st.query) {
       const q = st.query.toLowerCase();
       if (!nameOf(a).toLowerCase().includes(q) && !a.id.toLowerCase().includes(q)) return false;
@@ -200,12 +205,72 @@
     return a.status === st.filter;
   }
 
+  // What the two upstreams did for each other, and whether any reply stayed a refusal.
+  // Everything here is computed from the request log the page already holds, so it needs
+  // no extra endpoint: bridge and refusal are properties of the recorded requests.
+  function aiCard(data) {
+    const rows = F.store.requests || [];
+    const byProvider = (data.pool && data.pool.by_provider) || {};
+    const now = F.now();
+    const SPAN = 5 * 60 * 1000;
+    const BUCKETS = 12;
+    const buckets = Array.from({ length: BUCKETS }, () => ({ bridge: 0, refusal: 0 }));
+    const routes = new Map();
+    let bridged = 0;
+    let refused = 0;
+    for (const r of rows) {
+      const servedBy = (F.accountById(r.account) && F.accountById(r.account).provider === 'claude') ? 'Claude' : 'DeepSeek';
+      if (r.bridged_from) {
+        bridged += 1;
+        const key = `${r.bridged_from} → ${servedBy}`;
+        routes.set(key, (routes.get(key) || 0) + 1);
+      }
+      if (r.refusal_unrepaired) refused += 1;
+      const age = now - (r.ts || 0);
+      if (age < 0 || age >= SPAN * BUCKETS) continue;
+      const i = BUCKETS - 1 - Math.floor(age / SPAN);
+      if (r.bridged_from) buckets[i].bridge += 1;
+      if (r.refusal_unrepaired) buckets[i].refusal += 1;
+    }
+    const peak = Math.max(1, ...buckets.map(b => Math.max(b.bridge, b.refusal)));
+    const bars = h('div', { class: 'ai-bars', role: 'img', 'aria-label': `Bridged and unrepaired requests per 5 minutes over the last hour; peak ${peak}` },
+      buckets.map((b, i) => h('div', { class: 'ai-bucket', 'data-tip': `${fmt.clock((BUCKETS - i - 1) * 300)} ago · ${b.bridge} bridged, ${b.refusal} refusal` },
+        h('span', { class: 'ai-bar is-bridge', style: { '--h': `${(b.bridge / peak) * 100}%` } }),
+        h('span', { class: 'ai-bar is-refusal', style: { '--h': `${(b.refusal / peak) * 100}%` } }))));
+    const metric = (label, value, tip) => h('div', { class: 'ai-metric', 'data-tip': tip },
+      h('span', { class: 'ai-metric-label', text: label }),
+      h('span', { class: 'ai-metric-value', text: value }));
+    const providerLine = Object.entries(byProvider)
+      .map(([p, own]) => `${p === 'claude' ? 'Claude' : 'DeepSeek'} ${own.can_serve}/${own.total}`)
+      .join(' · ') || 'No logins loaded';
+    const last = data.bridge && data.bridge.last;
+    return h('section', { class: 'ai-card', 'aria-label': 'Upstream routing' },
+      h('div', { class: 'ai-head' },
+        h('div', null, h('h2', { class: 'ai-title', text: 'Routing' }), h('p', { class: 'ai-sub', text: providerLine })),
+        h('p', { class: 'ai-legend' }, h('span', { class: 'ai-key is-bridge', text: 'bridged' }), h('span', { class: 'ai-key is-refusal', text: 'unrepaired refusal' }))),
+      h('div', { class: 'ai-metrics' },
+        metric('Bridged here', fmt.int(bridged), 'Logged requests answered by the other upstream'),
+        metric('Unrepaired', fmt.int(refused), 'Replies that still opened as a refusal after every repair pass'),
+        metric('Bridge total', fmt.int((data.bridge && data.bridge.total) || 0), 'Every bridge since the server started'),
+        metric('Last move', last ? `${last.route} · ${fmt.shortModel(last.model)}` : '—', 'The most recent bridge')),
+      bars,
+      routes.size
+        ? h('ul', { class: 'ai-routes' }, Array.from(routes, ([label, n]) => h('li', null, h('span', { text: label }), h('strong', { text: fmt.int(n) }))))
+        : h('p', { class: 'quiet ai-empty', text: 'No bridged requests in the log yet.' }));
+  }
+
   // ---------------------------------------------------------------- view
   function mount(root) {
     st.root = root;
     const filterInput = h('input', { type: 'search', class: 'input input-search', placeholder: 'Filter accounts', 'aria-label': 'Filter accounts', 'data-view-filter': '', spellcheck: 'false' });
     filterInput.addEventListener('input', () => { st.query = filterInput.value.trim(); render(); });
     const chips = F.segmented('Account state', FILTERS, st.filter, (v) => { st.filter = v; render(); });
+    const providerSelect = F.select('Upstream', [
+      { value: 'all', label: 'Both upstreams' },
+      { value: 'deepseek', label: 'DeepSeek' },
+      { value: 'claude', label: 'Claude' },
+    ], st.provider, (v) => { st.provider = v; render(); });
+    const aiHost = h('div', { class: 'ai-host' });
     const count = h('p', { class: 'meta count' });
     const banner = h('div', { class: 'view-banner' });
     const table = h('table', { class: 'data-table accounts-table rows-clickable' });
@@ -239,12 +304,13 @@
       }
     } });
     root.append(hero, h('div', { class: 'view-pad' },
-      h('div', { class: 'filter-row' }, h('label', { class: 'search-field search-field-inline' }, F.icon('search'), filterInput), chips, count, probeAll),
+      aiHost,
+      h('div', { class: 'filter-row' }, h('label', { class: 'search-field search-field-inline' }, F.icon('search'), filterInput), chips, providerSelect, count, probeAll),
       banner,
       h('div', { class: 'table-scroll' }, table),
       empty,
       note));
-    Object.assign(st.els, { hero, filterInput, chips, count, banner, table, tbody, empty, note });
+    Object.assign(st.els, { hero, aiHost, filterInput, chips, count, banner, table, tbody, empty, note });
 
     tbody.addEventListener('click', (e) => {
       const tr = e.target.closest('tr[data-id]');
@@ -278,6 +344,21 @@
     const by = (st$) => all.filter(a => a.status === st$).length;
     const parts = [[by('ready'), 'ready'], [by('busy'), 'busy'], [by('cooldown'), 'cooling down'], [by('disabled'), 'paused'], [by('no_credentials'), 'without credentials']]
       .filter(([n]) => n).map(([n, l]) => `${n} ${l}`);
+    // The two upstreams are separate pools: a Claude login cannot answer a DeepSeek model,
+    // so "6 of 12 can serve" is only useful when it also says which 6.
+    const perProvider = Object.entries(data.pool.by_provider || {});
+    if (perProvider.length > 1) {
+      parts.push(perProvider
+        .map(([provider, own]) => `${own.can_serve}/${own.total} ${provider === 'claude' ? 'Claude' : 'DeepSeek'}`)
+        .join(' · '));
+    }
+    // Answers one upstream gave for the other: silent until it happens, then worth seeing.
+    if (data.bridge && data.bridge.total) {
+      const routes = Object.entries(data.bridge.by_route || {})
+        .map(([route, n]) => `${n} ${route.replace('->', ' → ')}`)
+        .join(', ');
+      parts.push(`bridge ${routes}`);
+    }
     hero.set(`${all.length} account${all.length === 1 ? '' : 's'} in the pool.`, parts.join(' · '), data.pool.can_serve === 0 ? 'crit' : null);
   }
 
@@ -286,6 +367,7 @@
     const data = F.store.accounts;
     const { tbody, count, empty, banner, table } = st.els;
     renderHero(data);
+    if (st.els.aiHost) st.els.aiHost.replaceChildren(data ? aiCard(data) : '');
 
     banner.replaceChildren();
     if (st.reloadErrors) {
@@ -347,6 +429,12 @@
     tr.setAttribute('aria-busy', pending ? 'true' : 'false');
     tr.classList.toggle('is-out', a.status === 'disabled' || a.status === 'no_credentials');
     const inline = [];
+    // Always visible: replacing a rejected session is the common repair, and hiding it
+    // in the row menu made the feature look absent.
+    inline.push(F.iconBtn('reload', `Recapture ${nameOf(a)}`, {
+      'data-focus-key': `recapture-${a.id}`,
+      onclick: (e) => { e.stopPropagation(); openAdd(e.currentTarget, { account: a }); },
+    }));
     if (a.status === 'cooldown') inline.push(F.btn('Clear', { size: 'sm', onclick: (e) => action(a, 'clear-cooldown', e.currentTarget), 'data-focus-key': `clear-${a.id}` }));
     if (a.credentials?.token && (a.status === 'ready' || a.status === 'busy')) inline.push(F.btn('Test', { size: 'sm', onclick: (e) => action(a, 'probe', e.currentTarget), 'data-focus-key': `probe-${a.id}` }));
     if (a.status === 'disabled' && a.disabled_by === 'admin') inline.push(F.btn('Resume', { size: 'sm', onclick: (e) => action(a, 'enable', e.currentTarget), 'data-focus-key': `resume-${a.id}` }));
@@ -358,6 +446,7 @@
       h('td', { class: 'cell-state' }, stateCell(a), pending ? h('span', { class: 'row-pending' }, h('span', { class: 'spinner', 'aria-hidden': 'true' }), pending) : null),
       h('td', { class: 'cell-account' },
         h('span', { class: 'acct-name', text: nameOf(a) }),
+        h('span', { class: 'chip provider-chip', text: a.provider === 'claude' ? 'Claude' : 'DeepSeek' }),
         a.name && a.name !== a.id ? h('span', { class: 'mono-id acct-id', text: a.id }) : null,
         h('span', { class: 'cell-mobile-meta meta', text: `${a.failures} / ${a.total_failures} failures · ${fmt.compact(tokens(a))} tokens ≈` })),
       h('td', { class: 'num', text: `${a.failures} / ${a.total_failures}` }),
@@ -390,7 +479,7 @@
     const add = F.btn('Add account', { kind: 'primary', icon: 'plus', onclick: (e) => openAdd(e.currentTarget) });
     return h('div', { class: 'empty' },
       h('p', { class: 'empty-title', text: 'No accounts are loaded.' }),
-      h('p', { class: 'empty-text', text: 'Add a DeepSeek login exported by the DeepSeek Auth Exporter extension, or import one from a terminal and reload:' }),
+      h('p', { class: 'empty-text', text: 'Add a DeepSeek session or a Claude cookie jar exported by the seek Auth Exporter extension, or import one from a terminal and reload:' }),
       F.codeLine('npm run auth:import'),
       h('div', { class: 'empty-actions' }, add, F.btn('Reload from disk', { icon: 'reload', onclick: (e) => reload(e.currentTarget) })));
   }
@@ -429,6 +518,7 @@
 
     // credentials
     body.append(section('Credentials', h('ul', { class: 'facts' },
+      fact('Upstream', a.provider === 'claude' ? 'Claude · claude.ai web' : 'DeepSeek · chat.deepseek.com'),
       fact('Token', a.credentials.token ? h('span', null, F.icon('check', 'icon-sm is-ok-text'), ' present') : h('span', { class: 'is-crit-text', text: 'missing' })),
       fact('Cookie parts', fmt.int(a.credentials.cookie_count)),
       fact('Stored', 'Values are never sent to the browser.'))));
@@ -475,6 +565,13 @@
       if (ierr.type === 'disabled_in_file') errBox.append(F.btn('Enable in file', { size: 'sm', onclick: (e) => action(a, 'file-enable', e.currentTarget) }));
       stateBox.append(errBox);
     }
+    // A rejected login is repaired in place: paste a fresh capture under the same name
+    // and the import replaces the stored session, keeping the id, usage and history.
+    stateBox.append(h('div', { class: 'insp-row' },
+      h('p', { class: 'meta', text: a.provider === 'claude'
+        ? 'Rejected or rotated out? A fresh claude.ai capture replaces this jar. The id and its history stay.'
+        : 'Rejected or expired? A fresh session replaces this token. The id and its history stay.' }),
+      F.btn('Recapture…', { size: 'sm', icon: 'reload', 'data-focus-key': 'recapture', onclick: (e) => openAdd(e.currentTarget, { account: a }) })));
     body.append(section('Routing', stateBox));
 
     // rename
@@ -543,31 +640,57 @@
     return name.toLowerCase().replace(/[^a-z0-9._-]+/g, '-').replace(/^[-.]+|[-.]+$/g, '').slice(0, 48);
   }
 
-  // Mirrors scripts/auth_import.js normalizeAuth/validateAuth for live feedback.
+  // Mirrors scripts/auth_import.js normalizeAuth and lib/claude-web.js detectProvider so
+  // the dialog accepts both shapes: a DeepSeek session (token + cookie) and a Claude
+  // cookie jar (sessionKey, no token).
+  function cookiesFrom(obj) {
+    if (typeof obj.cookie === 'string') return obj.cookie.split(';').map(s => s.trim()).filter(Boolean);
+    if (typeof obj.cookies === 'string') return obj.cookies.split(';').map(s => s.trim()).filter(Boolean);
+    if (Array.isArray(obj.cookies)) return obj.cookies.filter(c => c && c.name && c.value != null).map(c => `${String(c.name).trim()}=${String(c.value).trim()}`);
+    return [];
+  }
+
   function inspectAuth(text) {
     if (!text.trim()) return { empty: true };
     let obj;
     try { obj = JSON.parse(text); } catch (e) { return { parseError: e.message }; }
+    // A browser cookie export can be a bare array; wrap it so the server sees one object.
+    if (Array.isArray(obj)) {
+      if (!obj.length || !obj.every(c => c && typeof c === 'object' && c.name)) {
+        return { parseError: 'The JSON must be an object like {"token": "…", "cookie": "…"}.' };
+      }
+      obj = { cookies: obj };
+    }
     if (!obj || typeof obj !== 'object' || Array.isArray(obj)) {
       return { parseError: 'The JSON must be an object like {"token": "…", "cookie": "…"}.' };
     }
+    const parts = cookiesFrom(obj);
+    const names = new Set(parts.map(p => p.split('=')[0].trim()));
     const token = String(obj.token || obj.access_token || obj.accessToken || obj.auth_token || '').trim().replace(/^Bearer\s+/i, '');
-    let cookieParts = 0;
-    if (typeof obj.cookie === 'string') cookieParts = obj.cookie.split(';').map(s => s.trim()).filter(Boolean).length;
-    else if (Array.isArray(obj.cookies)) cookieParts = obj.cookies.filter(c => c && c.name).length;
-    else if (typeof obj.cookies === 'string') cookieParts = obj.cookies.split(';').map(s => s.trim()).filter(Boolean).length;
+    const declared = String(obj.provider || obj.api || '').toLowerCase().trim();
+    // Same rule the server uses: a declared provider wins, otherwise a jar carrying
+    // sessionKey and no DeepSeek token is Claude's shape.
+    const claude = declared === 'claude' || declared === 'anthropic' || (!token && names.has('sessionKey'));
     return {
       obj,
+      provider: claude ? 'claude' : undefined,
+      claude,
       token: Boolean(token),
-      cookieParts,
+      cookieParts: parts.length,
+      sessionKey: names.has('sessionKey'),
+      cfClearance: names.has('cf_clearance'),
       hifDliq: Boolean(obj.hif_dliq || obj['x-hif-dliq']),
       hifLeim: Boolean(obj.hif_leim || obj['x-hif-leim']),
       wasm: Boolean(obj.wasmUrl || obj.wasm_url),
-      ok: Boolean(token) && cookieParts > 0,
+      ok: claude ? names.has('sessionKey') : Boolean(token) && parts.length > 0,
     };
   }
 
-  function openAdd(trigger) {
+  function openAdd(trigger, preset = {}) {
+    // Recapture opens the same dialog for one existing login. The import replaces a
+    // session by matching the name, so the row keeps its id, usage and history.
+    const recapture = preset.account || null;
+    const recaptureName = recapture ? nameOf(recapture) : '';
     const dlg = document.getElementById('add-account');
     dlg.classList.add('dialog-split');
     const close = () => dlg.close();
@@ -576,7 +699,7 @@
     const fileInput = h('input', { type: 'file', accept: 'application/json,.json', class: 'sr-only', id: 'add-file' });
     const hint = h('div', { class: 'source-empty' },
       h('span', { class: 'source-empty-icon' }, F.icon('files')),
-      h('p', { class: 'source-empty-title', text: 'Drop deepseek-auth.json' }),
+      h('p', { class: 'source-empty-title', text: 'Drop deepseek-auth.json or claude-auth.json' }),
       h('p', { class: 'source-empty-text' }, h('label', { class: 'source-pick', for: 'add-file', text: 'Choose file' })));
     const fileName = h('span', { class: 'source-file-name' });
     const fileMeta = h('span', { class: 'source-file-meta' });
@@ -587,11 +710,31 @@
     const chips = h('ul', { class: 'chips', 'aria-live': 'polite', 'aria-label': 'Auth file check' });
     const sourceError = h('p', { class: 'source-error', role: 'alert', hidden: true });
     const source = h('div', { class: 'source', id: 'add-source' }, hint, loaded, chips);
-    const nameInput = h('input', { type: 'text', class: 'input', id: 'add-name', maxlength: '64', spellcheck: 'false', autocomplete: 'off', required: true });
+    const nameInput = h('input', { type: 'text', class: 'input', id: 'add-name', maxlength: '64', spellcheck: 'false', autocomplete: 'off', required: true, value: recaptureName });
     const nameHelp = h('p', { class: 'field-help', id: 'add-name-help' });
     nameInput.setAttribute('aria-describedby', 'add-name-help');
     const formErr = h('div', { class: 'form-error', role: 'alert', hidden: true });
-    const submit = F.btn('Add account', { kind: 'primary', type: 'submit' });
+    // Pick the provider before dropping the file, so adding a Claude login does not
+    // depend on already owning a Claude capture to make the guide switch.
+    let chosen = recapture ? (recapture.provider || 'deepseek') : 'deepseek';
+    const providerButtons = {};
+    const providerRow = h('div', { class: 'add-provider', role: 'group', 'aria-label': 'Provider' });
+    const setChosen = (next) => {
+      chosen = next === 'claude' ? 'claude' : 'deepseek';
+      for (const [key, btn] of Object.entries(providerButtons)) {
+        btn.classList.toggle('is-active', key === chosen);
+        btn.setAttribute('aria-pressed', String(key === chosen));
+      }
+      renderSteps(chosen);
+    };
+    for (const p of ['deepseek', 'claude']) {
+      providerButtons[p] = F.btn(p === 'claude' ? 'Claude' : 'DeepSeek', {
+        size: 'sm',
+        onclick: () => { setChosen(p); validate(); },
+      });
+      providerRow.append(providerButtons[p]);
+    }
+    const submit = F.btn(recapture ? 'Recapture' : 'Add account', { kind: 'primary', type: 'submit' });
     const cancel = F.btn('Cancel', { onclick: close });
     const warn = (location.protocol === 'http:' && !F.isLoopbackHost())
       ? F.notice('warn', 'This page is not on HTTPS', `The credentials travel unencrypted to ${location.host}. Anyone on the network path can read them. Import from the machine running the proxy, or put it behind HTTPS.`)
@@ -610,7 +753,13 @@
       source.classList.toggle('has-content', !state.empty);
       if (state.empty) showError('');
       else if (state.parseError) showError(`Not valid JSON: ${state.parseError}. Download the file again from the extension.`);
-      else {
+      else if (state.claude) {
+        chips.append(
+          chip(state.sessionKey ? 'sessionKey' : 'sessionKey missing', state.sessionKey, false, state.sessionKey ? 'The cookie claude.ai authenticates with' : 'A claude.ai jar always carries sessionKey'),
+          chip(state.cookieParts ? `Cookies · ${state.cookieParts}` : 'Cookies', state.cookieParts > 0, false, state.cookieParts ? `${state.cookieParts} cookie${state.cookieParts === 1 ? '' : 's'} in the jar` : 'No cookies in the jar'),
+          chip('cf_clearance', state.cfClearance, true, state.cfClearance ? 'Cloudflare cookie present' : 'cf_clearance not found (claude.ai may challenge the login)'));
+        showError(state.sessionKey ? '' : 'This is a Claude cookie jar but it has no sessionKey. Sign in on claude.ai, click Read current tab, then Download again.');
+      } else {
         chips.append(
           chip('Token', state.token, false, state.token ? 'Token found' : 'Token missing'),
           chip(state.cookieParts ? `Cookie · ${state.cookieParts}` : 'Cookie', state.cookieParts > 0, false, state.cookieParts ? `Cookie found, ${state.cookieParts} part${state.cookieParts === 1 ? '' : 's'}` : 'Cookie missing'),
@@ -619,15 +768,23 @@
         const missing = [!state.token && 'token', !state.cookieParts && 'cookie'].filter(Boolean);
         showError(missing.length ? `This file has no ${missing.join(' or ')} field. Sign in on chat.deepseek.com, click Read current tab, then Download again.` : '');
       }
+      // A recognised file decides the provider; an empty dropzone keeps the choice above.
+      if (!state.empty && !state.parseError) setChosen(state.claude ? 'claude' : 'deepseek');
+      else setChosen(chosen);
       const name = nameInput.value.trim();
       const slug = slugFor(name);
-      nameHelp.textContent = !name ? '' : slug ? `Saved as accounts/${slug}.json` : 'Saved as accounts/account-N.json';
-      const ready = state.ok && name.length > 0;
+      const replaces = recapture && name.toLowerCase() === recaptureName.toLowerCase();
+      nameHelp.textContent = !name ? '' : replaces
+        ? `Replaces the stored ${recapture.provider === 'claude' ? 'claude.ai cookie jar' : 'session'} for ${recapture.id}. The id and its history stay.`
+        : slug ? `Saved as accounts/${slug}.json` : 'Saved as accounts/account-N.json';
+      const ready = (chosen === 'claude' ? state.sessionKey : state.ok) && name.length > 0;
       submit.setAttribute('aria-disabled', String(!ready));
-      submit.setAttribute('data-tip', ready ? '' : !state.ok ? `Drop a valid ${state.claude ? 'claude.ai cookie jar' : 'deepseek-auth.json'} first` : 'Enter a name');
+      submit.setAttribute('data-tip', ready ? '' : chosen === 'claude'
+        ? (state.sessionKey ? 'Enter a name' : 'Drop a claude.ai cookie jar (sessionKey) first')
+        : (state.ok ? 'Enter a name' : 'Drop a valid deepseek-auth.json first'));
     };
     // Anything that is not the auth file gets pointed back at the file to look for.
-    const FIND_FILE = 'Find deepseek-auth.json, the file the extension downloaded (usually in Downloads), and drop that.';
+    const FIND_FILE = 'Find deepseek-auth.json or claude-auth.json, the file the extension downloaded (usually in Downloads), and drop that.';
     const reject = (text) => { raw = ''; validate(); showError(`${text} ${FIND_FILE}`); };
     const loadFile = (file) => {
       if (!file) return;
@@ -665,12 +822,13 @@
       formErr.hidden = true;
       F.setPending(submit, 'Adding…');
       try {
-        const res = await F.api('POST', '/admin/accounts/import', { body: { name: nameInput.value.trim(), provider: state.provider, auth: state.obj } });
+        const res = await F.api('POST', '/admin/accounts/import', { body: { name: nameInput.value.trim(), provider: chosen === 'claude' ? 'claude' : undefined, auth: state.obj } });
         F.applyAccountUpdate(res);
         const acc = res.account;
         raw = '';
         close();
-        F.toast(acc && acc.status === 'ready' ? `Added ${nameOf(acc)}. Ready to serve.` : `Added ${acc ? nameOf(acc) : 'the account'}${acc ? ` (${F.charts.stateWord(acc)})` : ''}.`, { tone: 'success' });
+        const verb = res.replaced ? 'Recaptured' : 'Added';
+        F.toast(acc && acc.status === 'ready' ? `${verb} ${nameOf(acc)}. Ready to serve.` : `${verb} ${acc ? nameOf(acc) : 'the account'}${acc ? ` (${F.charts.stateWord(acc)})` : ''}.`, { tone: 'success' });
         F.refresh();
       } catch (err) {
         F.clearPending(submit);
@@ -692,6 +850,7 @@
     if (warn) form.append(warn);
     form.append(
       fileInput,
+      h('label', { class: 'field-label add-label', text: 'Provider' }), providerRow,
       h('label', { class: 'field-label add-label', for: 'add-file', text: 'Auth file' }),
       source, sourceError,
       h('label', { class: 'field-label', for: 'add-name', text: 'Name' }), nameInput, nameHelp,
@@ -701,15 +860,25 @@
       h('span', { class: 'add-step-n', 'aria-hidden': 'true', text: String(n) }),
       h('span', { class: 'add-step-body' }, h('span', { class: 'add-step-title', text: title }), h('span', { class: 'add-step-detail' }, detail)));
     const code = (text) => h('code', { text });
+    const addTitle = h('h2', { class: 'add-title', id: 'add-title', text: 'Add an account' });
+    const addSteps = h('ol', { class: 'add-steps', 'aria-label': 'Where the file comes from' });
+    const installStep = () => step(1, 'Install seek Auth Exporter', [h('span', { text: 'In ' }), code('chrome://extensions'), h('span', { text: ' turn on Developer mode, then Load unpacked → the ' }), code('chrome-extension'), h('span', { text: ' folder of FreeDeepseekAPI' })]);
+    // The two providers need different sign-in pages and different files, so the guide
+    // follows whatever the dropped file turned out to be.
+    const renderSteps = (provider) => {
+      const claude = provider === 'claude';
+      addTitle.textContent = claude ? 'Add a Claude account' : 'Add a DeepSeek account';
+      addSteps.replaceChildren(
+        installStep(),
+        step(2, 'Read your session', claude
+          ? [h('span', { text: 'On a signed-in claude.ai tab, click ' }), h('strong', { text: 'Read current tab' }), h('span', { text: '. Claude needs no token — only the cookie jar.' })]
+          : [h('span', { text: 'On a signed-in chat.deepseek.com tab, click ' }), h('strong', { text: 'Read current tab' })]),
+        step(3, 'Bring the file here', [h('span', { text: 'Click ' }), h('strong', { text: 'Download' }), h('span', { text: `, then drop ${claude ? 'claude-auth.json' : 'deepseek-auth.json'} into Auth file` })]));
+    };
     // Where the file comes from, over whale sharks rising to the surface (MEDIA.md); the form on the right.
     const visual = h('aside', { class: 'add-visual' },
       h('img', { class: 'add-visual-media', src: '/dashboard/media-whale-sharks.jpg', alt: '', decoding: 'async', 'aria-hidden': 'true' }),
-      h('div', { class: 'add-visual-inner' },
-          h('h2', { class: 'add-title', id: 'add-title', text: 'Add a DeepSeek account' }),
-          h('ol', { class: 'add-steps', 'aria-label': 'Where the file comes from' },
-            step(1, 'Install DeepSeek Auth Exporter', [h('span', { text: 'In ' }), code('chrome://extensions'), h('span', { text: ' turn on Developer mode, then Load unpacked → the ' }), code('chrome-extension'), h('span', { text: ' folder of FreeDeepseekAPI' })]),
-            step(2, 'Read your session', [h('span', { text: 'On a signed-in chat.deepseek.com tab, click ' }), h('strong', { text: 'Read current tab' })]),
-            step(3, 'Bring the file here', [h('span', { text: 'Click ' }), h('strong', { text: 'Download' }), h('span', { text: ', then drop it into Auth file' })]))));
+      h('div', { class: 'add-visual-inner' }, addTitle, addSteps));
     dlg.replaceChildren(
       F.iconBtn('close', 'Close', { onclick: close, cls: 'dialog-close' }),
       visual,

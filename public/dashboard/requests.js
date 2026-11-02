@@ -114,13 +114,21 @@
     if (tr) return tr;
     const local = r.local ? F.icon('local', 'icon-sm') : null;
     const stream = r.stream ? F.icon('stream', 'icon-sm') : null;
+    // Which upstream answered, and whether a repair pass had to fight the reply.
+    const bridged = r.bridged_from
+      ? h('span', { class: 'chip glyph-chip', 'data-tip': `Bridged: the ${r.bridged_from} pool could not serve this turn, so the other upstream answered`, text: 'bridge' })
+      : null;
+    const refusal = r.refusal_unrepaired
+      ? h('span', { class: 'chip glyph-chip is-warn', 'data-tip': 'The reply still opened as a refusal after every repair pass', text: 'refusal' })
+      : null;
     const acc = r.account ? (F.accountById(r.account) ? F.accountById(r.account).name || r.account : r.account) : '—';
     tr = h('tr', { 'data-id': String(r.id), tabindex: '-1', class: r.ok ? null : 'is-error' },
       h('td', { class: 'num-left', title: fmt.dateTime(r.ts), text: fmt.time(r.ts) }),
       h('td', null, h('span', { class: ['status-code', r.ok ? 'is-ok' : 'is-crit'] }, F.lamp(r.ok ? 'ready' : 'error'), String(r.status))),
       h('td', { class: 'cell-endpoint' }, h('span', { text: fmt.api(r.api) || fmt.endpoint(r.path) }),
         stream ? h('span', { class: 'glyph', 'data-tip': 'Streamed', 'aria-label': 'streamed' }, stream) : null,
-        local ? h('span', { class: 'glyph', 'data-tip': 'Answered locally, no DeepSeek call', 'aria-label': 'answered locally' }, local) : null),
+        local ? h('span', { class: 'glyph', 'data-tip': 'Answered locally, no DeepSeek call', 'aria-label': 'answered locally' }, local) : null,
+        bridged, refusal),
       h('td', { class: 'mono-id', title: r.model || '', text: r.model ? fmt.shortModel(r.model) : '—' }),
       h('td', { class: 'cell-trunc', title: r.account || '', text: acc }),
       h('td', { class: 'cell-trunc mono-id', title: r.agent || '', text: r.agent || '—' }),

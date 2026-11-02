@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>seek — DeepSeek session</title>
+  <title>seek — session</title>
   <link rel="stylesheet" href="popup.css">
 </head>
 <body>
@@ -17,6 +17,13 @@
     </span>
     <span id="poolLine" class="pool" data-state="off" title="Logins in the proxy pool">proxy offline</span>
   </header>
+
+  <!-- Which upstream this capture is for. Both are stored separately, so switching
+       never overwrites the other provider's session. -->
+  <section class="provider-switch" role="tablist" aria-label="Provider">
+    <button type="button" class="provider-btn is-active" role="tab" aria-selected="true" data-provider="deepseek">DeepSeek</button>
+    <button type="button" class="provider-btn" role="tab" aria-selected="false" data-provider="claude">Claude</button>
+  </section>
 
   <!-- Google Sign-In banner (shown when not signed in) -->
   <section id="googleSignInSection" class="google-signin-section" hidden>
@@ -61,7 +68,7 @@
       <span class="label">Account</span>
       <span id="rowUser" class="value">Not read</span>
     </div>
-    <div class="check">
+    <div class="check" id="checkToken">
       <span class="check-icon" aria-hidden="true">
         <svg viewBox="0 0 24 24"><path d="M8.5 11V8.5a3.5 3.5 0 0 1 7 0V11M7 11h10v9H7zM12 15v2"/></svg>
       </span>
@@ -84,7 +91,12 @@
     </div>
   </section>
 
-  <label class="toggle" for="chkSignOut">
+  <label class="toggle" id="autoPushRow" for="chkAutoPush">
+    <input type="checkbox" id="chkAutoPush" checked>
+    <span class="toggle-text">Push to the proxy as soon as a session is captured</span>
+  </label>
+
+  <label class="toggle" id="signOutRow" for="chkSignOut">
     <input type="checkbox" id="chkSignOut" checked>
     <span class="toggle-text">Sign this browser out of DeepSeek after adding it to the proxy</span>
   </label>

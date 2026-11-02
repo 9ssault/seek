@@ -743,10 +743,16 @@ async function runAccountHealthPass() {
     return healthProbeState;
 }
 
-// One probe, two transports. A DeepSeek login is checked with the token probe; a Claude
-// login is checked by asking claude.ai for its organisations, which is the same call the
-// first turn makes — so a working probe means a working turn.
+// One probe per transport. A DeepSeek login is checked with the token probe; a Claude
+// login by asking claude.ai for its organisations, and a Grok login by asking grok.com
+// for its session — both the same call the first turn makes, so a working probe means a
+// working turn. Grok used to fall into the DeepSeek refresher, which read a cookie-only
+// jar as "no_credentials" and published that as the account's auth state.
 async function probeAccount(account, { timeoutMs = 15000 } = {}) {
+    if (account.provider === grokWeb.PROVIDER) {
+        const probe = await grokWeb.probeLogin(account.config || {}, { timeoutMs });
+        return { ...probe, code: null, detail: clipText(probe.detail || '', 160) };
+    }
     if ((account.provider || 'deepseek') !== claudeWeb.PROVIDER) return authRefresh.probeAccountToken(account, { timeoutMs });
     const probe = await claudeWeb.probeLogin(account.config || {}, { timeoutMs });
     // A working probe also settles the organisation uuid, so the first turn skips that call.
@@ -801,6 +807,7 @@ function accountStatus(account) {
         // which reset on a served request, are in /admin/accounts.
         failures: account.totalFailures || 0,
         last_used_at: account.lastUsedAt || null,
+        limits: accountLimitsView(account),
         prompt_tokens: usage.prompt_tokens,
         completion_tokens: usage.completion_tokens,
         usd: usage.usd,
@@ -1031,6 +1038,45 @@ function addUsageToMinute(entry) {
         addUsage(map.get(slot), entry);
     }
 }
+// Rolling per-account request times. Claude publishes its own quota windows; DeepSeek and
+// Grok publish nothing, so this is what makes a limits view possible for every provider
+// instead of only the one that happens to report.
+const accountRequestTimes = new Map();
+const LIMIT_WINDOWS_MS = { '5h': 5 * 60 * 60 * 1000, '24h': 24 * 60 * 60 * 1000 };
+function noteAccountRequest(accountId, at = Date.now()) {
+    if (!accountId) return;
+    const times = accountRequestTimes.get(accountId) || [];
+    times.push(at);
+    const cutoff = at - LIMIT_WINDOWS_MS['24h'];
+    while (times.length && times[0] < cutoff) times.shift();
+    accountRequestTimes.set(accountId, times);
+}
+
+// One limits shape for the dashboard, the extension and /health, whatever the upstream:
+// provider-published windows when there are any (Claude 5h/7d), plus the gateway's own
+// observed counters, which exist for every provider.
+function accountLimitsView(account, now = Date.now()) {
+    const upstream = account?.limits && account.limits.windows && Object.keys(account.limits.windows).length
+        ? account.limits : null;
+    const times = accountRequestTimes.get(account?.id) || [];
+    const observed = {};
+    for (const [name, span] of Object.entries(LIMIT_WINDOWS_MS)) {
+        observed[name] = times.filter(t => t > now - span).length;
+    }
+    const cooling = (account?.cooldownUntil || 0) > now;
+    return {
+        source: upstream ? 'upstream' : 'observed',
+        status: upstream?.status || null,
+        overage_in_use: upstream?.overage_in_use === true,
+        observed_at: upstream?.observed_at || now,
+        windows: upstream ? upstream.windows : {},
+        requests: observed,
+        cooldown: cooling
+            ? { until: account.cooldownUntil, reason: account.cooldownReason || null }
+            : null,
+    };
+}
+
 function recordRequest(entry) {
     entry.id = ++requestSeq;
     if (!entry.api) entry.api = apiForPath(entry.path);
@@ -1040,6 +1086,7 @@ function recordRequest(entry) {
     addUsage(lifetimeUsage, entry);
     addUsageToMinute(entry);
     if (!entry.account) return;
+    noteAccountRequest(entry.account, entry.at || Date.now());
     const prev = usageByAccount.get(entry.account) || { prompt_tokens: 0, completion_tokens: 0, usd: 0, requests: 0 };
     prev.prompt_tokens += entry.prompt_tokens || 0;
     prev.completion_tokens += entry.completion_tokens || 0;
@@ -1523,14 +1570,18 @@ const PROVIDER_LABELS = { deepseek: 'DeepSeek', claude: 'Claude', grok: 'Grok' }
 const BRIDGE_MODELS = {
     // target provider -> { source model id: target model id }
     claude: {
-        'deepseek-v4-flash-thinking': 'claude-sonnet-4-5',
-        'deepseek-v4-flash-thinking-nosearch': 'claude-sonnet-4-5',
+        // Points at the models a standard claude.ai plan actually serves; sonnet-4-5 and
+        // opus are refused upstream with `model_not_available`.
+        'deepseek-v4-flash-thinking': 'claude-sonnet-4-6',
+        'deepseek-v4-flash-thinking-nosearch': 'claude-sonnet-4-6',
         'deepseek-v4-flash': 'claude-haiku-4-5',
         'deepseek-v4-flash-nosearch': 'claude-haiku-4-5',
     },
     deepseek: {
         'claude-opus-4-1': 'deepseek-v4-flash-thinking',
+        'claude-opus-4-6': 'deepseek-v4-flash-thinking',
         'claude-sonnet-4-5': 'deepseek-v4-flash-thinking',
+        'claude-sonnet-4-6': 'deepseek-v4-flash-thinking',
         'claude-haiku-4-5': 'deepseek-v4-flash',
         'grok-4': 'deepseek-v4-flash-thinking',
         'grok-4-fast': 'deepseek-v4-flash',
@@ -1538,10 +1589,12 @@ const BRIDGE_MODELS = {
         'grok-code-fast-1': 'deepseek-v4-flash',
     },
     grok: {
-        'deepseek-v4-flash-thinking': 'grok-4',
-        'deepseek-v4-flash-thinking-nosearch': 'grok-4',
-        'deepseek-v4-flash': 'grok-4-fast',
-        'deepseek-v4-flash-nosearch': 'grok-4-fast',
+        // Points at the ids a grok.com account actually serves; grok-4 and grok-4-fast are
+        // answered with `Model is not found`.
+        'deepseek-v4-flash-thinking': 'grok-3-reasoning',
+        'deepseek-v4-flash-thinking-nosearch': 'grok-3-reasoning',
+        'deepseek-v4-flash': 'grok-3-mini-companion',
+        'deepseek-v4-flash-nosearch': 'grok-3-mini-companion',
     },
 };
 
@@ -1599,13 +1652,13 @@ function bridgeModelFor(model, targetProvider) {
     if (table[canonical]) return table[canonical];
     // A dated id this build has never heard of: match by class rather than refuse.
     if (target === claudeWeb.PROVIDER) {
-        if (/thinking|reason|opus|grok-4$/.test(canonical)) return 'claude-sonnet-4-5';
+        if (/thinking|reason|opus|grok-4$/.test(canonical)) return 'claude-sonnet-4-6';
         if (/flash|sonnet|haiku|default|fast/.test(canonical)) return 'claude-haiku-4-5';
         return null;
     }
     if (target === grokWeb.PROVIDER) {
-        if (/thinking|reason|opus|sonnet/.test(canonical)) return 'grok-4';
-        if (/flash|haiku|fast/.test(canonical)) return 'grok-4-fast';
+        if (/thinking|reason|opus|sonnet/.test(canonical)) return 'grok-3-reasoning';
+        if (/flash|haiku|fast/.test(canonical)) return 'grok-3-mini-companion';
         return null;
     }
     if (/opus|sonnet|thinking|grok-4$/.test(canonical)) return 'deepseek-v4-flash-thinking';
@@ -2317,6 +2370,17 @@ function markClaudeFailure(account, status, detail = '', retryAfter = null) {
         console.log(`[account:${account.id}] Claude answered a Cloudflare challenge (HTTP ${status}) — short cooldown, the cookie itself is untouched.`);
         return;
     }
+    // An unavailable model is a plan entitlement, not a dead cookie. The transport already
+    // walked its fallback chain by the time this sees the error, so this branch only
+    // fires when the plan could serve none of them: cool the login briefly, keep the jar.
+    const modelGone = /model_not_available|model isn.t available|isn.t available on your current plan/i.test(String(detail || ''));
+    if (modelGone) {
+        countAccountFailure(account, 'model_unavailable', status, detail);
+        account.cooldownUntil = Math.max(account.cooldownUntil || 0, Date.now() + WAF_TRANSIENT_COOLDOWN_MS);
+        account.cooldownReason = 'model_unavailable';
+        console.log(`[account:${account.id}] Claude has no model available for this plan right now (HTTP ${status}) — short cooldown, the cookie is untouched.`);
+        return;
+    }
     if (status === 401 || status === 403) {
         countAccountFailure(account, 'auth', status, detail);
         // claude.ai answers 401 for a cookie jar that was rotated out by another login;
@@ -2468,6 +2532,9 @@ async function askClaudeStream({ prompt, agentId, model, freshSessionPrompt, loc
             parentMessageUuid: session.parentMessageId || claudeWeb.ROOT_MESSAGE_UUID,
             prompt: promptUsed,
             model,
+            // claude.ai reports its real 5h/7d windows mid-stream; keep them on the login
+            // so the dashboard shows the same limits view it shows for DeepSeek.
+            onLimit: (limits) => { account.limits = limits; },
         });
         // Same shape as the DeepSeek path returns: the reader only sees `.body`.
         return { resp: { ok: true, status: resp.status, body: stream }, agentId, account, promptUsed, freshSessionReset: accountRotationReset || Boolean(rollover) };
@@ -4814,11 +4881,20 @@ function basePersonaConfig() {
 // Claude may carry its own rule file: SEEK_PERSONA_CLAUDE_FILE (or SEEK_PERSONA_CLAUDE
 // inline). Without one it uses the shared persona, so nothing changes for a setup that
 // only ever configured DEEPSEEK_PERSONA.
+// Per-provider persona override. A Claude or Grok login can have its own persona file
+// (policy, voice, limits of that upstream) while DeepSeek keeps the default spec; with no
+// override set, every provider gets the same base persona, so the pipeline is identical.
+const PERSONA_ENV = {
+    [claudeWeb.PROVIDER]: { file: 'SEEK_PERSONA_CLAUDE_FILE', inline: 'SEEK_PERSONA_CLAUDE' },
+    [grokWeb.PROVIDER]: { file: 'SEEK_PERSONA_GROK_FILE', inline: 'SEEK_PERSONA_GROK' },
+};
+
 function personaConfig(provider = 'deepseek') {
     const base = basePersonaConfig();
-    if (provider !== claudeWeb.PROVIDER) return base;
-    const file = String(process.env.SEEK_PERSONA_CLAUDE_FILE || '').trim();
-    const inline = String(process.env.SEEK_PERSONA_CLAUDE || '');
+    const env = PERSONA_ENV[provider];
+    if (!env) return base;
+    const file = String(process.env[env.file] || '').trim();
+    const inline = String(process.env[env.inline] || '');
     if (!file && !inline.trim()) return base;
     const max = base.max;
     return {
@@ -4829,7 +4905,7 @@ function personaConfig(provider = 'deepseek') {
         source: inline.trim() ? 'inline' : file,
         discovered: false,
         default_spec: false,
-        provider: claudeWeb.PROVIDER,
+        provider,
     };
 }
 
@@ -4848,13 +4924,19 @@ function seekIdentityNotice(model, { personaActive = false, provider = null } = 
     // Claude and DeepSeek are two upstreams behind one gateway. The runtime line names
     // the one actually serving this turn: telling a Claude turn it is a gateway to
     // DeepSeek makes the model contradict the model name it was just given.
-    const isClaude = provider === claudeWeb.PROVIDER
-        || (provider == null && claudeWeb.isClaudeModel(model));
-    const cfg = model ? resolveModelConfig(model, isClaude ? claudeWeb.PROVIDER : 'deepseek') : null;
-    const upstreamProvider = isClaude ? 'Claude' : 'DeepSeek';
-    const upstream = cfg?.real_model || (isClaude ? 'Claude Sonnet 4.5' : 'DeepSeek V4.1 Flash');
+    const isGrok = provider === grokWeb.PROVIDER
+        || (provider == null && grokWeb.isGrokModel(model));
+    const isClaude = !isGrok && (provider === claudeWeb.PROVIDER
+        || (provider == null && claudeWeb.isClaudeModel(model)));
+    const activeProvider = isGrok ? grokWeb.PROVIDER : (isClaude ? claudeWeb.PROVIDER : 'deepseek');
+    const cfg = model ? resolveModelConfig(model, activeProvider) : null;
+    // The notice names the upstream actually serving the turn. Telling a Grok turn it is
+    // DeepSeek is the one thing a model reliably corrects the user about.
+    const upstreamProvider = isGrok ? 'Grok' : (isClaude ? 'Claude' : 'DeepSeek');
+    const upstream = cfg?.real_model
+        || (isGrok ? 'Grok 4' : (isClaude ? 'Claude Sonnet 4.6' : 'DeepSeek V4.1 Flash'));
     const flags = [];
-    if (cfg?.thinking_enabled) flags.push(isClaude ? 'thinking on' : 'DeepThink on');
+    if (cfg?.thinking_enabled) flags.push(isClaude || isGrok ? 'thinking on' : 'DeepThink on');
     if (cfg?.search_enabled === false) flags.push('web search off');
     const suffix = flags.length ? ` (${flags.join(', ')})` : '';
     // With a persona loaded, this must not read as a second, competing self: a block that
@@ -5140,6 +5222,9 @@ function adminAccountView(account, now = Date.now()) {
             completion_tokens: usage.completion_tokens,
             usd: usage.usd,
         },
+        // Provider-published windows where they exist (Claude), plus the gateway's own
+        // 5h/24h counters, which every provider gets.
+        limits: accountLimitsView(account, now),
     };
 }
 
@@ -8126,6 +8211,8 @@ module.exports = {
         agentsLocalDecision,
         adminAccountView,
         adminPoolSummary,
+        accountLimitsView,
+        noteAccountRequest,
         recordRequest,
         requestLog,
         clearRequestStats,

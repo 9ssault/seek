@@ -57,11 +57,14 @@ test('normalizeConfig keeps a cookie jar as a string and settles the model id', 
   assert.equal(config.cookie, 'sessionKey=abc; cf_clearance=z');
   assert.equal(config.cookies, undefined);
   assert.equal(config.org, 'org-9');
-  assert.equal(config.model, 'claude-sonnet-4-5');
+  assert.equal(config.model, 'claude-sonnet-4-6');
 });
 
 test('model aliases resolve to the dated web ids, unknown dated ids pass through', () => {
-  assert.equal(claudeWeb.resolveModel('sonnet').web, 'claude-sonnet-4-5-20250929');
+  assert.equal(claudeWeb.resolveModel('sonnet').web, 'claude-sonnet-4-6');
+  // `opus` has no plan access on a standard login, so the alias serves it with Sonnet
+  // rather than sending an id claude.ai rejects with `model_not_available`.
+  assert.equal(claudeWeb.resolveModel('opus').gateway, 'claude-sonnet-4-6');
   assert.equal(claudeWeb.resolveModel('anthropic/claude-opus-4-1').web, 'claude-opus-4-1-20250805');
   assert.equal(claudeWeb.resolveModel('claude-haiku-4-5[1m]').gateway, 'claude-haiku-4-5');
   assert.equal(claudeWeb.resolveModel('claude-3-7-sonnet-20250219').web, 'claude-3-7-sonnet-20250219');
@@ -268,4 +271,62 @@ test('a Cloudflare-challenged Claude turn cools down without being marked dead',
   const dead = { id: 'cl2', provider: 'claude', config: { cookie: 'sessionKey=y' }, cooldownUntil: 0, failures: 0 };
   markClaudeFailure(dead, 401, 'Claude answered HTTP 401: authentication_error');
   assert.equal(dead.invalid, true, 'a real 401 does mark it dead');
+});
+
+test('a model the plan refuses falls back to one it serves, same conversation', async () => {
+  const seen = [];
+  const okStream = 'event: message_start\ndata: {"type":"message_start","message":{"uuid":"m-1"}}\n\n'
+    + 'data: {"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"fine"}}\n\n'
+    + 'data: {"type":"message_stop"}\n\n';
+  const fetchImpl = async (url, opts = {}) => {
+    const sent = JSON.parse(opts.body || '{}');
+    seen.push(sent.model);
+    if (sent.model !== 'claude-sonnet-4-6') {
+      return new Response(JSON.stringify({
+        type: 'error',
+        error: {
+          type: 'permission_error',
+          message: "This model isn't available right now.",
+          details: { error_code: 'model_not_available' },
+        },
+      }), { status: 403, headers: { 'content-type': 'application/json' } });
+    }
+    return new Response(okStream, { status: 200, headers: { 'content-type': 'text/event-stream' } });
+  };
+  const { model, stream } = await claudeWeb.completeStream({
+    config: { cookie: 'sessionKey=abc' },
+    org: 'org-1',
+    conversationId: 'conv-1',
+    prompt: 'hello',
+    model: 'claude-sonnet-4-5',
+    fetchImpl,
+    env: { CLAUDE_BASE_URL: 'https://claude.test' },
+  });
+  assert.equal(model.gateway, 'claude-sonnet-4-6');
+  assert.deepEqual(seen, ['claude-sonnet-4-5-20250929', 'claude-sonnet-4-6']);
+  const frames = await new Response(stream).text();
+  assert.match(frames, /"v":"fine"/);
+});
+
+test('a refused model is classified apart from a rejected cookie', () => {
+  assert.equal(claudeWeb.classifyStatus(403, '{"error":{"details":{"error_code":"model_not_available"}}}').type, 'model_unavailable');
+  assert.equal(claudeWeb.classifyStatus(403, '{"error":{"type":"permission_error","message":"This model isn\'t available on your current plan."}}').type, 'model_unavailable');
+  assert.equal(claudeWeb.classifyStatus(403, 'nope').type, 'forbidden');
+  assert.equal(claudeWeb.classifyStatus(403, 'Just a moment...').type, 'waf_blocked');
+});
+
+test('claude.ai quota windows normalize into the limits shape', () => {
+  const limits = claudeWeb.normalizeLimit({
+    type: 'within_limit',
+    overageInUse: false,
+    windows: {
+      '5h': { status: 'within_limit', utilization: 0.08, resets_at: 1793626800 },
+      '7d': { status: 'within_limit', utilization: 0, resets_at: 1794150000 },
+    },
+  });
+  assert.equal(limits.status, 'within_limit');
+  assert.equal(limits.windows['5h'].utilization, 0.08);
+  assert.equal(limits.windows['5h'].resets_at, 1793626800000);
+  assert.equal(limits.windows['7d'].utilization, 0);
+  assert.equal(claudeWeb.normalizeLimit(null), null);
 });

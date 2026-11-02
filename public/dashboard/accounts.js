@@ -546,6 +546,11 @@
         : 'grok.com signs every request with this cookie jar (the sso cookie plus the Cloudflare cookies). There is no bearer token to show, and none is needed.' }));
     }
 
+    // limits: upstream-published windows (Claude 5h/7d) plus the gateway's own counters,
+    // which every provider has. One shape, so all three read the same way.
+    const limits = limitsSection(a);
+    if (limits) body.append(limits);
+
     // lane trace (1h)
     const trace = h('div', { class: 'lanes-host lanes-host-mini' });
     body.append(section('Last hour', trace, F.store.requestsMissing ? h('p', { class: 'meta', text: 'Traffic history needs GET /admin/requests.' }) : null));
@@ -649,6 +654,42 @@
     removeBtn.addEventListener('click', () => confirmRemove(a, removeBtn));
     body.append(h('div', { class: 'insp-foot' }, removeBtn));
     return { title, sub, body };
+  }
+
+  function limitsSection(a) {
+    const lim = a.limits;
+    if (!lim) return null;
+    const windows = lim.windows || {};
+    const rows = [];
+    for (const name of Object.keys(windows)) {
+      const win = windows[name] || {};
+      const used = Number(win.utilization);
+      const pct = Number.isFinite(used) ? Math.max(0, Math.min(100, Math.round(used * 100))) : null;
+      const resetIn = win.resets_at ? fmt.clock(Math.max(0, (win.resets_at - F.now()) / 1000)) : null;
+      const bar = pct === null ? null : h('span', {
+        class: 'limits-bar', role: 'meter', 'aria-valuenow': String(pct), 'aria-valuemin': '0', 'aria-valuemax': '100',
+        'aria-label': `${name} usage`,
+      }, h('span', { class: `limits-bar-fill${pct >= 90 ? ' is-high' : pct >= 70 ? ' is-warm' : ''}` }));
+      if (bar && pct !== null) bar.firstChild.style.width = `${pct}%`;
+      rows.push(h('li', { class: 'limits-row' },
+        h('span', { class: 'limits-name', text: name }),
+        bar,
+        h('span', { class: 'limits-pct', text: pct === null ? (win.status === 'rejected' ? 'at limit' : '—') : `${pct}%` }),
+        resetIn ? h('span', { class: 'meta', text: `resets in ${resetIn}` }) : null));
+    }
+    const req = lim.requests || {};
+    rows.push(h('li', { class: 'limits-row limits-row-meta' },
+      h('span', { class: 'limits-name', text: 'Requests' }),
+      h('span', { class: 'meta', text: `${fmt.int(req['5h'] || 0)} in the last 5h · ${fmt.int(req['24h'] || 0)} in 24h` })));
+    const cooling = lim.cooldown;
+    return section('Limits',
+      cooling ? h('p', { class: 'is-warn-text' },
+        `Cooling down (${fmt.cooldownReason(cooling.reason)}) for `,
+        h('span', { class: 'readout-inline', 'data-cooldown-until': cooling.until, text: fmt.clock((cooling.until - F.now()) / 1000) })) : null,
+      h('ul', { class: 'limits' }, ...rows),
+      h('p', { class: 'meta', text: lim.source === 'upstream'
+        ? 'Windows are published by the upstream on every turn.'
+        : 'Counted by this gateway: this upstream publishes no quota windows.' }));
   }
 
   function section(title, ...kids) {

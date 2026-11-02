@@ -242,7 +242,7 @@ The full field list (`AgentSummary`, `FileMeta`) is in [`public/dashboard/API.md
 | 503 | `overloaded` / `no_auth` | Backpressure, or neither provider has a login |
 | 504 | `request_timeout` | `DEEPSEEK_REQUEST_DEADLINE_MS` (default 120000) |
 
-A `429`/`503` from one provider is not the end of the request when the other provider has a login that can serve: the turn is retried there once, in a fresh chat, on the same-class model (`deepseek-v4-flash-thinking` ↔ `claude-sonnet-4-5`, `deepseek-v4-flash` ↔ `claude-haiku-4-5`, `claude-opus-4-1` → `deepseek-v4-flash-thinking`). A bridged response carries `x-seek-bridge: <From>-><To>; model=<id>` (plus `; dropped_images=N` when a Claude turn could not carry an attachment). The bridge is skipped for a pinned `x-account-id` and for a model id with an explicit `claude/` or `anthropic/` prefix. `SEEK_CROSS_PROVIDER_FALLBACK_OFF=1` disables it.
+A `429`/`503` from one provider is not the end of the request when the other provider has a login that can serve: the turn is retried there once, in a fresh chat, on the same-class model (`deepseek-v4-flash-thinking` ↔ `claude-sonnet-4-6`, `deepseek-v4-flash` ↔ `claude-haiku-4-5`, `claude-opus-4-1` → `deepseek-v4-flash-thinking`; Grok bridges to `grok-3-reasoning` / `grok-3-mini-companion`). A bridged response carries `x-seek-bridge: <From>-><To>; model=<id>` (plus `; dropped_images=N` when a Claude turn could not carry an attachment). The bridge is skipped for a pinned `x-account-id` and for a model id with an explicit `claude/` or `anthropic/` prefix. `SEEK_CROSS_PROVIDER_FALLBACK_OFF=1` disables it.
 
 `pool` also carries `by_provider: { deepseek: {…}, claude: {…} }` with the same counters per upstream, since a login on one side cannot serve a model on the other.
 

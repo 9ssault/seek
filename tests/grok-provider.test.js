@@ -42,7 +42,9 @@ test('a Grok login is recognised by its jar, and a DeepSeek or Claude jar is not
 });
 
 test('model ids resolve for the aliases an agent sends', () => {
-  assert.equal(grokWeb.resolveModel('grok').gateway, 'grok-4');
+  // The alias lands on an id a grok.com account can actually serve.
+  assert.equal(grokWeb.resolveModel('grok').gateway, 'grok-3-reasoning');
+  assert.equal(grokWeb.resolveModel('grok-fast').gateway, 'grok-3-mini-companion');
   assert.equal(grokWeb.resolveModel('grok-4-fast').web, 'grok-4-fast');
   assert.equal(grokWeb.resolveModel('xai/grok-3').gateway, 'grok-3');
   assert.equal(grokWeb.isGrokModel('grok-4-fast'), true);
@@ -127,11 +129,11 @@ test('the server routes Grok ids to Grok only when a Grok login exists', () => {
 });
 
 test('the bridge maps between Grok and the other pools by class', () => {
-  assert.equal(S.bridgeModelFor('deepseek-v4-flash-thinking', 'grok'), 'grok-4');
-  assert.equal(S.bridgeModelFor('deepseek-v4-flash', 'grok'), 'grok-4-fast');
+  assert.equal(S.bridgeModelFor('deepseek-v4-flash-thinking', 'grok'), 'grok-3-reasoning');
+  assert.equal(S.bridgeModelFor('deepseek-v4-flash', 'grok'), 'grok-3-mini-companion');
   assert.equal(S.bridgeModelFor('grok-4', 'deepseek'), 'deepseek-v4-flash-thinking');
   assert.equal(S.bridgeModelFor('grok-4-fast', 'deepseek'), 'deepseek-v4-flash');
-  assert.equal(S.bridgeModelFor('grok-4', 'claude'), 'claude-sonnet-4-5');
+  assert.equal(S.bridgeModelFor('grok-4', 'claude'), 'claude-sonnet-4-6');
   assert.equal(S.alternateProvider('grok'), 'deepseek');
 });
 
@@ -190,7 +192,7 @@ test('a chat completion served by Grok comes back as OpenAI chunks', async (t) =
   await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
   t.after(() => new Promise(resolve => server.close(resolve)));
   const port = server.address().port;
-  const payload = JSON.stringify({ model: 'grok-4', messages: [{ role: 'user', content: 'name a colour' }] });
+  const payload = JSON.stringify({ model: 'grok-3-reasoning', messages: [{ role: 'user', content: 'name a colour' }] });
 
   const res = await new Promise((resolve, reject) => {
     const req = http.request({
@@ -209,5 +211,62 @@ test('a chat completion served by Grok comes back as OpenAI chunks', async (t) =
   assert.equal(res.status, 200, res.text);
   assert.match(res.text, /Hello from Grok/);
   assert.equal(calls[0].path, '/rest/app-chat/conversations/new');
-  assert.equal(calls[0].body.modelName, 'grok-4');
+  assert.equal(calls[0].body.modelName, 'grok-3-reasoning');
+});
+
+test('the stream header token is status, not answer text', async () => {
+  const body = [
+    '{"result":{"response":{"token":"Thinking about your request","isThinking":true,"messageTag":"header"}}}',
+    '{"result":{"response":{"token":"","messageTag":"response_start"}}}',
+    '{"result":{"response":{"token":"OK","isThinking":false,"messageTag":"final"}}}',
+  ].map(l => `data: ${l}\n\n`).join('');
+  const frames = await collect(grokWeb.translateStream(body));
+  assert.equal(frames.filter(f => f.p === 'response/content').map(f => f.v).join(''), 'OK');
+  assert.ok(!JSON.stringify(frames).includes('Thinking about'));
+});
+
+test('a model the account cannot reach falls back to one it serves', async () => {
+  const seen = [];
+  const fetchImpl = async (url, opts = {}) => {
+    let sent = {};
+    try { sent = JSON.parse(opts.body || '{}'); } catch (e) {}
+    seen.push(sent.modelName);
+    if (sent.modelName !== 'grok-3-reasoning') {
+      return new Response(JSON.stringify({ error: { code: 7, message: 'Model is not found', details: [] } }), {
+        status: 403, headers: { 'content-type': 'application/json' },
+      });
+    }
+    return new Response('data: {"result":{"response":{"token":"fine","messageTag":"final"}}}\n\n', {
+      status: 200, headers: { 'content-type': 'text/event-stream' },
+    });
+  };
+  const { model, stream } = await grokWeb.completeStream({
+    config: { cookie: 'sso=abc' },
+    prompt: 'hello',
+    model: 'grok-3-mini-companion-that-does-not-exist',
+    fetchImpl,
+    env: { GROK_BASE_URL: 'https://grok.test' },
+  });
+  assert.equal(model.gateway, 'grok-3-reasoning');
+  assert.deepEqual(seen, ['grok-3-mini-companion-that-does-not-exist', 'grok-3-reasoning']);
+  const frames = await new Response(stream).text();
+  assert.match(frames, /"v":"fine"/);
+});
+
+test('a missing model is classified apart from a rejected cookie', () => {
+  assert.equal(grokWeb.classifyStatus(403, '{"error":{"code":7,"message":"Model is not found"}}').type, 'model_unavailable');
+  assert.equal(grokWeb.classifyStatus(200, '{"error":{"message":"This model is temporarily unavailable."}}').type, 'model_unavailable');
+  assert.equal(grokWeb.classifyStatus(403, 'nope').type, 'forbidden');
+});
+
+test('bare newline-delimited JSON is parsed, not only SSE data frames', async () => {
+  // grok.com sends NDJSON in production; treat the absence of `data:` as the normal case.
+  const body = [
+    JSON.stringify({ result: { response: { token: 'bare', messageTag: 'final' } } }),
+    JSON.stringify({ result: { response: { token: ' works', messageTag: 'final' } } }),
+    JSON.stringify({ result: { response: { isHardStop: true, stopReason: 'end_turn' } } }),
+  ].join('\n') + '\n';
+  const frames = await collect(grokWeb.translateStream(body));
+  assert.equal(frames.filter(f => f.p === 'response/content').map(f => f.v).join(''), 'bare works');
+  assert.equal(frames.find(f => f.p === 'response/finish_reason').v, 'stop');
 });

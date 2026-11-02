@@ -438,6 +438,17 @@ textarea.input { height: auto; padding: 10px 14px; resize: vertical; }
 .state-no_credentials .state-word { color: var(--crit); }
 .meter { display: inline-block; width: 40px; height: 4px; border-radius: 2px; background: var(--rule-mid); overflow: hidden; margin-left: 6px; vertical-align: middle; }
 .meter-fill { display: block; height: 100%; background: var(--warn); transform-origin: left; transition: transform 1000ms linear; }
+
+/* Account limits: upstream quota windows plus the gateway's own 5h/24h counters. */
+.limits { list-style: none; margin: 0; padding: 0; display: grid; gap: 8px; }
+.limits-row { display: grid; grid-template-columns: 44px 1fr 44px auto; align-items: center; gap: 10px; }
+.limits-row-meta { display: block; }
+.limits-name { font-variant-numeric: tabular-nums; color: var(--ink-2); font-size: 0.8125rem; }
+.limits-pct { font-variant-numeric: tabular-nums; text-align: right; font-size: 0.8125rem; color: var(--ink-2); }
+.limits-bar { display: block; height: 6px; border-radius: 3px; background: var(--rule-mid); overflow: hidden; }
+.limits-bar-fill { display: block; height: 100%; width: 0; border-radius: 3px; background: var(--ok, var(--signal)); transition: width 400ms ease; }
+.limits-bar-fill.is-warm { background: var(--warn); }
+.limits-bar-fill.is-high { background: var(--crit); }
 .row-pending { display: inline-flex; align-items: center; gap: 6px; margin-left: 10px; color: var(--ink-3); font-size: 0.8125rem; }
 .cell-account { min-width: 140px; }
 .acct-name { font-weight: 600; }

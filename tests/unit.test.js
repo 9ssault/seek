@@ -2562,3 +2562,35 @@ test('refusal repair: the correction restates the order and forbids a partial an
   assert.match(note, /artefact|artifact/i);
   assert.match(note, /partial answer plus a boundary statement counts as no answer/i);
 });
+
+test('limits view exists for every provider, with upstream windows when reported', () => {
+  const S = require('../server.js').__test;
+  const account = { id: 'limits-acct-a', provider: 'deepseek', cooldownUntil: 0 };
+  // Ascending, the way real traffic arrives: 30h ago (outside both windows),
+  // 6h ago (inside 24h only), 1h ago (inside both).
+  S.noteAccountRequest(account.id, Date.now() - 30 * 60 * 60 * 1000);
+  S.noteAccountRequest(account.id, Date.now() - 6 * 60 * 60 * 1000);
+  S.noteAccountRequest(account.id, Date.now() - 60 * 60 * 1000);
+  const observed = S.accountLimitsView(account, Date.now());
+  assert.equal(observed.source, 'observed');
+  assert.equal(observed.requests['5h'], 1);
+  assert.equal(observed.requests['24h'], 2);
+  assert.deepEqual(observed.windows, {});
+
+  account.provider = 'claude';
+  account.limits = {
+    status: 'within_limit',
+    overage_in_use: false,
+    observed_at: 1,
+    windows: { '5h': { status: 'within_limit', utilization: 0.08, resets_at: 1793626800000 } },
+  };
+  const merged = S.accountLimitsView(account, Date.now());
+  assert.equal(merged.source, 'upstream');
+  assert.equal(merged.windows['5h'].utilization, 0.08);
+  // The observed counters are still there: the view is uniform across providers.
+  assert.equal(merged.requests['5h'], 1);
+
+  account.cooldownUntil = Date.now() + 60000;
+  account.cooldownReason = 'ratelimit';
+  assert.equal(S.accountLimitsView(account).cooldown.reason, 'ratelimit');
+});

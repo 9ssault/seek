@@ -9,8 +9,9 @@ const assert = require('node:assert');
 const S = require('../server.js').__test;
 
 test('a DeepSeek model bridges to a Claude model of the same class', () => {
-    assert.equal(S.bridgeModelFor('deepseek-v4-flash-thinking', 'claude'), 'claude-sonnet-4-5');
-    assert.equal(S.bridgeModelFor('deepseek-v4-flash-thinking-nosearch', 'claude'), 'claude-sonnet-4-5');
+    // Bridges target the models a standard claude.ai plan actually serves.
+    assert.equal(S.bridgeModelFor('deepseek-v4-flash-thinking', 'claude'), 'claude-sonnet-4-6');
+    assert.equal(S.bridgeModelFor('deepseek-v4-flash-thinking-nosearch', 'claude'), 'claude-sonnet-4-6');
     assert.equal(S.bridgeModelFor('deepseek-v4-flash', 'claude'), 'claude-haiku-4-5');
     assert.equal(S.bridgeModelFor('deepseek-v4-flash-nosearch', 'claude'), 'claude-haiku-4-5');
 });
@@ -27,7 +28,7 @@ test('a Claude model bridges back to the matching DeepSeek model', () => {
 test('an id this build has never seen bridges by class, or not at all', () => {
     assert.equal(S.bridgeModelFor('claude-sonnet-9-0-20990101', 'deepseek'), 'deepseek-v4-flash-thinking');
     assert.equal(S.bridgeModelFor('claude-haiku-9-0-20990101', 'deepseek'), 'deepseek-v4-flash');
-    assert.equal(S.bridgeModelFor('deepseek-v4-flash-thinking', 'claude'), 'claude-sonnet-4-5');
+    assert.equal(S.bridgeModelFor('deepseek-v4-flash-thinking', 'claude'), 'claude-sonnet-4-6');
     assert.equal(S.bridgeModelFor('totally-unknown', 'claude'), null);
     // An absent model id means the provider default, so it bridges to the default's class.
     assert.equal(S.bridgeModelFor('', 'deepseek'), 'deepseek-v4-flash-thinking');

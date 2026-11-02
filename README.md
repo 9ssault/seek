@@ -894,11 +894,12 @@ A Claude login is merged into the same pool: same chat lock, same one-conversati
 
 | ID | Web model | What it does |
 |---|---|---|
-| `claude-sonnet-4-5` | `claude-sonnet-4-5-20250929` | Claude Sonnet 4.5, extended thinking on |
-| `claude-opus-4-1` | `claude-opus-4-1-20250805` | Claude Opus 4.1 |
+| `claude-sonnet-4-6` | `claude-sonnet-4-6` | Claude Sonnet 4.6, extended thinking on |
 | `claude-haiku-4-5` | `claude-haiku-4-5-20251001` | Claude Haiku 4.5, fastest |
 
-`sonnet`, `opus` and `haiku` are aliases. `claude/…` or `anthropic/…` forces the Claude path even when no Claude login is loaded, so the error names the missing account rather than silently answering from DeepSeek. A dated id this build does not know (`claude-3-7-sonnet-20250219`) is forwarded as-is.
+A standard claude.ai login serves only those two. `claude-sonnet-4-5`, `claude-opus-4-1` and `claude-opus-4-6` are refused upstream with `model_not_available`; the gateway retries the same conversation on the next servable model instead of parking the login. Every Claude turn also carries the login's real `5h`/`7d` quota windows into `/admin/accounts`.
+
+`sonnet`, `opus` and `haiku` are aliases (`opus` resolves to Sonnet 4.6, since no plan here serves it). `claude/…` or `anthropic/…` forces the Claude path even when no Claude login is loaded, so the error names the missing account rather than silently answering from DeepSeek. A dated id this build does not know (`claude-3-7-sonnet-20250219`) is forwarded as-is.
 
 With **no** Claude login loaded, `claude-sonnet-4-5` keeps resolving to DeepSeek, exactly as before, so an existing Claude Code setup does not change behaviour the day a Claude account is added to the file. `/v1/models` lists the Claude ids only once a Claude login is in the pool.
 
@@ -907,7 +908,7 @@ npm run claude:auth -- --name personal
 curl http://127.0.0.1:9655/v1/models | grep claude
 curl http://127.0.0.1:9655/v1/chat/completions \
   -H 'Content-Type: application/json' \
-  -d '{"model":"claude-sonnet-4-5","messages":[{"role":"user","content":"hello"}]}'
+  -d '{"model":"claude-sonnet-4-6","messages":[{"role":"user","content":"hello"}]}'
 ```
 
 The login is a cookie jar (`sessionKey` plus the Cloudflare cookies the browser earned), captured from a real browser session; there is no password input and nothing is typed into a chat. Both the dashboard (**Add account**, or **Recapture…** on an existing row) and the extension (switch the popup to **Claude**, then *Read current tab* → *Push to Proxy*) accept that jar; the extension verifies it against `claude.ai/api/organizations` before it can be exported, and never signs the browser out of claude.ai. A rejected cookie marks that login `needs_auth` in the dashboard instead of failing every request that picks it.

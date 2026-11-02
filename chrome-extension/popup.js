@@ -462,6 +462,20 @@ async function readPool() {
           .map(a => [String(a?.name || a?.id || '').toLowerCase(), a?.token_fingerprint || ''])
           .filter(([label]) => Boolean(label))),
         needsAuth: accounts.map(a => a && a.needs_auth ? String(a?.name || a?.id || '').toLowerCase() : '').filter(Boolean),
+        // Highest published quota window across the pool, so the popup can show the same
+        // limits the dashboard does instead of only a ready count.
+        peak: (() => {
+          let best = null;
+          for (const a of accounts) {
+            const windows = a && a.limits && a.limits.windows ? a.limits.windows : {};
+            for (const name of Object.keys(windows)) {
+              const used = Number(windows[name] && windows[name].utilization);
+              if (!Number.isFinite(used)) continue;
+              if (!best || used > best.pct) best = { window: name, pct: Math.round(used * 100) };
+            }
+          }
+          return best;
+        })(),
       };
     } catch { /* try the next origin */ }
   }
@@ -489,7 +503,11 @@ function renderPool() {
     el.dataset.state = 'off';
     return;
   }
-  el.textContent = `${poolSnapshot.ready}/${poolSnapshot.total} logins ready`;
+  const peak = poolSnapshot.peak ? ` · ${poolSnapshot.peak.window} ${poolSnapshot.peak.pct}%` : '';
+  el.textContent = `${poolSnapshot.ready}/${poolSnapshot.total} logins ready${peak}`;
+  el.title = poolSnapshot.peak
+    ? `Highest upstream quota window in the pool: ${poolSnapshot.peak.window} at ${poolSnapshot.peak.pct}% used.`
+    : 'No upstream quota windows have been reported yet.';
   el.dataset.state = 'on';
 }
 

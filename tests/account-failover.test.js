@@ -680,7 +680,7 @@ function adminFixture(t) {
 const ACCOUNT_VIEW_KEYS = [
   'busy', 'busy_agent', 'busy_since', 'cooldown_reason', 'cooldown_remaining_sec', 'cooldown_until',
   'credentials', 'disabled_by', 'email', 'enabled', 'failures', 'id', 'last_error', 'last_success_at',
-  'last_used_at', 'name', 'provider', 'status', 'total_failures', 'usage',
+  'last_used_at', 'limits', 'name', 'provider', 'status', 'total_failures', 'usage',
   'invalid', 'last_probe', 'probe_latency_ms', 'token_state',
   // A login that lives inside a merged auth file, its pool role, and whether the token
   // needs a fresh capture. The dashboard uses all three.
@@ -708,6 +708,10 @@ test('GET /admin/accounts reports every account state without leaking credential
   assert.equal(byId.ready.cooldown_reason, null);
   assert.equal(byId.ready.last_error, null);
   assert.deepEqual(byId.ready.usage, { requests: 0, prompt_tokens: 0, completion_tokens: 0, usd: 0 });
+  // Every login carries a limits view, even a provider that publishes no quota headers.
+  assert.equal(byId.ready.limits.source, 'observed');
+  assert.deepEqual(byId.ready.limits.requests, { '5h': 0, '24h': 0 });
+  assert.equal(byId.cooling.limits.cooldown.reason, 'rate_limit');
 
   assert.equal(byId.cooling.status, 'cooldown');
   assert.equal(byId.cooling.cooldown_reason, 'rate_limit');

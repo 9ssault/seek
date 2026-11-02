@@ -462,6 +462,33 @@ async function verifyClaude(jar, fetchImpl = globalThis.fetch) {
   return { ok: true, org: org?.uuid || jar.lastActiveOrg || '', organization: org?.name || '' };
 }
 
+// A pasted jar: `sessionKey=…; cf_clearance=…`, a whole `Cookie:` header line, or the
+// JSON the dashboard accepts. This path exists because the cookies API is not the only
+// way to hold a login — a container tab, a second profile or a browser that partitions
+// cookies can sign in without `getAll` ever seeing the session, and the login is still
+// perfectly usable once it is pasted in.
+function parsePastedJar(raw) {
+  const text = String(raw || '').trim();
+  if (!text) return { cookie: '', sessionKey: '', names: [] };
+  if (text.startsWith('{') || text.startsWith('[')) {
+    let parsed = null;
+    try { parsed = JSON.parse(text); } catch { parsed = null; }
+    if (parsed) {
+      const list = Array.isArray(parsed) ? parsed : (Array.isArray(parsed.cookies) ? parsed.cookies : []);
+      if (list.length) {
+        const pairs = list.filter(c => c && c.name && c.value != null).map(c => `${String(c.name).trim()}=${String(c.value).trim()}`);
+        const cookie = pairs.join('; ');
+        return { cookie, sessionKey: (cookie.match(/(?:^|;\s*)sessionKey=([^;]+)/) || [])[1] || '', names: list.map(c => String(c.name).trim()).filter(Boolean) };
+      }
+      if (typeof parsed.cookie === 'string') return parsePastedJar(parsed.cookie);
+    }
+  }
+  const cookie = text.replace(/^\s*cookie\s*:\s*/i, '').replace(/[\r\n]+/g, ' ').trim();
+  const names = cookie.split(';').map(p => p.split('=')[0].trim()).filter(Boolean);
+  const sessionKey = (cookie.match(/(?:^|;\s*)sessionKey=([^;]+)/) || [])[1] || '';
+  return { cookie, sessionKey, names };
+}
+
 async function collectClaude() {
   const jar = await readClaudeCookies();
   const check = await verifyClaude(jar);
@@ -757,7 +784,26 @@ async function openDeepSeekWithGoogle() {
 
 // ─── Message handler ─────────────────────────────────────────────────────────
 
+// The version this worker was loaded from. The popup compares it with its own so a
+// half-updated extension says so instead of failing every button with a closed port.
+const WORKER_BUILD = (() => {
+  try { return chrome.runtime.getManifest().version; } catch { return null; }
+})();
+
 chrome.runtime.onMessage.addListener((request, _sender, sendResponse) => {
+  // Every path answers. A listener that returns without calling sendResponse closes the
+  // port, and the popup then reports "The message port closed before a response was
+  // received" — which says nothing about what went wrong.
+  const answer = (payload) => {
+    try { sendResponse(payload); } catch { /* the popup closed; nothing to answer */ }
+  };
+  const fail = (e) => answer({ success: false, error: e?.message || String(e || 'unknown error') });
+
+  // Build handshake: proves which code is answering, before any capture is attempted.
+  if (request.action === 'ping') {
+    answer({ success: true, build: WORKER_BUILD, provider: request.provider || null });
+    return true;
+  }
 
   // Collect session from the active DeepSeek tab
   if (request.action === 'collect') {
@@ -783,31 +829,63 @@ chrome.runtime.onMessage.addListener((request, _sender, sendResponse) => {
   // Sign the browser out of DeepSeek (called by the popup after a successful push)
   if (request.action === 'signOut') {
     signOutDeepSeek()
-      .then((result) => sendResponse(result))
-      .catch((e) => sendResponse({ success: false, error: e.message || String(e) }));
+      .then((result) => answer(result))
+      .catch(fail);
     return true;
   }
 
   // Collect a claude.ai cookie jar (no token, no tab script needed)
   if (request.action === 'collectClaude') {
-    collectClaude()
-      .then((auth) => {
+    (async () => {
+      try {
+        const auth = await collectClaude();
         if (auth && auth._verified === false) {
-          sendResponse({ success: false, error: auth._error || 'claude.ai rejected this session.', auth });
+          answer({ success: false, error: auth._error || 'claude.ai rejected this session.', auth });
         } else {
-          sendResponse({ success: true, auth });
+          answer({ success: true, auth });
         }
-      })
-      .catch((e) => sendResponse({ success: false, error: e.message || String(e) }));
+      } catch (e) {
+        fail(e);
+      }
+    })();
+    return true;
+  }
+
+  // A jar the browser would not hand over, typed or pasted by the user. Verified the
+  // same way a captured one is, and stored under the same key, so everything downstream
+  // (export, push, recapture) cannot tell the two apart.
+  if (request.action === 'setClaudeCookie') {
+    (async () => {
+      try {
+        const jar = parsePastedJar(request.cookie);
+        if (!jar.cookie) { answer({ success: false, error: 'Paste the claude.ai cookie first (sessionKey=…).' }); return; }
+        if (!jar.sessionKey) { answer({ success: false, error: `That text has no sessionKey=… pair (read: ${jar.names.join(', ') || 'none'}).` }); return; }
+        const check = await verifyClaude(jar);
+        const base = { provider: 'claude', cookie: jar.cookie, org: check.org || '', _cookies: jar.names.length, _cookieNames: jar.names, _lastUpdated: new Date().toISOString(), _source: 'pasted' };
+        const record = check.ok
+          ? { ...base, name: check.organization || '', _verified: true, _unverified: Boolean(check.unverified) }
+          : { ...base, _verified: false, _error: check.message };
+        await chrome.storage.local.set({ [CLAUDE_KEY]: record });
+        answer(record._verified ? { success: true, auth: record } : { success: true, auth: record, warning: record._error });
+      } catch (e) {
+        fail(e);
+      }
+    })();
     return true;
   }
 
   // Export previously stored auth, per provider
   if (request.action === 'export') {
     const key = request.provider === 'claude' ? CLAUDE_KEY : STORAGE_KEY;
-    chrome.storage.local.get(key, (result) => {
-      sendResponse({ success: true, auth: result[key] || {} });
-    });
+    try {
+      chrome.storage.local.get(key, (result) => {
+        const err = chrome.runtime.lastError;
+        if (err) { answer({ success: false, error: err.message || 'storage read failed' }); return; }
+        answer({ success: true, auth: result?.[key] || {} });
+      });
+    } catch (e) {
+      fail(e);
+    }
     return true;
   }
 
@@ -816,7 +894,7 @@ chrome.runtime.onMessage.addListener((request, _sender, sendResponse) => {
   // so it can never be exported or pushed as the wrong login.
   if (request.action === 'forget') {
     const key = request.provider === 'claude' ? CLAUDE_KEY : STORAGE_KEY;
-    chrome.storage.local.remove(key, () => sendResponse({ success: true }));
+    chrome.storage.local.remove(key, () => answer({ success: true }));
     return true;
   }
 
@@ -832,9 +910,12 @@ chrome.runtime.onMessage.addListener((request, _sender, sendResponse) => {
           sendResponse({ success: true, tabId: tab?.id, auth });
         }
       })
-      .catch((e) => {
-        sendResponse({ success: false, error: e.message || String(e) });
-      });
+      .catch(fail);
     return true;
   }
+
+  // Nothing matched — answer anyway. Silence here is what produces a closed message port
+  // in the popup, which reads as an anonymous failure instead of "this build is stale".
+  answer({ success: false, error: `This build does not handle "${request.action}". Open chrome://extensions and press Reload on this extension.` });
+  return true;
 });

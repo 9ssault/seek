@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "seek — auth exporter",
-  "version": "1.9",
+  "version": "1.10",
   "description": "Capture a DeepSeek session or a Claude cookie jar for seek (a self-hosted gateway) — Google sign-in, pool status, duplicate check",
   "browser_specific_settings": {
     "gecko": {
@@ -27,6 +27,7 @@
     "https://chat.deepseek.com/*",
     "https://*.deepseek.com/*",
     "https://claude.ai/*",
+    "https://*.claude.ai/*",
     "https://accounts.google.com/*",
     "http://localhost:9655/*",
     "http://127.0.0.1:9655/*"

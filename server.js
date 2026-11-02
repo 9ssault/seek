@@ -24,6 +24,21 @@ const authHealth = require('./lib/auth-health');
 const authRefresh = require('./lib/auth-refresh');
 const accountsDir = require('./lib/accounts-dir');
 const claudeWeb = require('./lib/claude-web');
+const grokWeb = require('./lib/grok-web');
+
+// Which upstream a login belongs to. One function for every reader, so a jar is never
+// classified two ways: an explicit `provider` wins, then a cookie shape unique to one
+// site (grok.com's `sso`, claude.ai's `sessionKey`), then the DeepSeek default.
+function detectProviderOf(config = {}) {
+    const declared = String(config.provider || config.api || '').toLowerCase().trim();
+    if (declared === 'grok' || declared === 'xai' || declared === 'x.ai') return grokWeb.PROVIDER;
+    if (declared === 'claude' || declared === 'anthropic') return claudeWeb.PROVIDER;
+    if (declared === 'deepseek') return 'deepseek';
+    if (config.token) return 'deepseek';
+    return grokWeb.detectProvider(config) === grokWeb.PROVIDER
+        ? grokWeb.PROVIDER
+        : claudeWeb.detectProvider(config);
+}
 const { createUpdater, RESTART_EXIT_CODE } = require('./lib/updater');
 const { t, loadUiLang, saveUiLang, pick, pause, printWordmark, browserOpenCommand } = require('./scripts/lib/tui-menu');
 
@@ -315,7 +330,9 @@ function checkInboundRateLimit(ip) {
 // plus the platform marker claude.ai expects. Kept beside the DeepSeek builder so
 // the two providers are visible side by side.
 function accountHeaders(config = DS_CONFIG) {
-    return claudeWeb.detectProvider(config) === claudeWeb.PROVIDER
+    const provider = detectProviderOf(config);
+    if (provider === grokWeb.PROVIDER) return grokWeb.buildHeaders(config);
+    return provider === claudeWeb.PROVIDER
         ? claudeWeb.buildHeaders(config)
         : buildBaseHeaders(config);
 }
@@ -425,9 +442,10 @@ function readAccountFiles(paths) {
             for (const entry of expandAuthFile(file, json)) {
                 authRefresh.normalizeConfig(entry.config);
                 claudeWeb.normalizeConfig(entry.config);
+                grokWeb.normalizeConfig(entry.config);
                 // Which upstream a login belongs to is a property of the file, not of
                 // the checkout: it travels with the account into the pool.
-                entry.provider = claudeWeb.detectProvider(entry.config);
+                entry.provider = detectProviderOf(entry.config);
                 loaded.push(entry);
             }
         } catch (e) {
@@ -483,7 +501,7 @@ function buildAccountsList(allLoaded, previous = []) {
     const relogged = [];
     loaded.forEach((entry, index) => {
         const { file, config, key = path.resolve(file), label = null, role = 'worker', merged = false } = entry;
-        const provider = entry.provider || claudeWeb.detectProvider(config);
+        const provider = entry.provider || detectProviderOf(config);
         const prev = previousByKey.get(key);
         if (!prev || takenIds.has(prev.id)) return;
         previousByKey.delete(key);
@@ -515,7 +533,7 @@ function buildAccountsList(allLoaded, previous = []) {
     loaded.forEach((entry, index) => {
         if (result[index]) return;
         const { file, config, key = path.resolve(file), label = null, role = 'worker', merged = false } = entry;
-        const provider = entry.provider || claudeWeb.detectProvider(config);
+        const provider = entry.provider || detectProviderOf(config);
         // A per-login file already has a slug as its file name; only a merged entry
         // (one file holding many logins) has no name of its own to fall back on.
         const id = uniqueAccountId(merged ? (label || file) : file, takenIds);
@@ -727,6 +745,8 @@ function accountHasCredentials(account) {
     // Claude is cookie-only: the sessionKey cookie is the whole credential. DeepSeek
     // needs both halves of its web session (token plus cookies).
     if (account?.provider === claudeWeb.PROVIDER) return claudeWeb.hasCredentials(account.config || {});
+    // Grok is cookie-only too, with its own session cookie name.
+    if (account?.provider === grokWeb.PROVIDER) return grokWeb.hasCredentials(account.config || {});
     return Boolean(account?.config?.token && account?.config?.cookie);
 }
 function isAccountEnabled(account) {
@@ -1436,24 +1456,47 @@ const CLAUDE_MODEL_CONFIGS = Object.fromEntries(Object.entries(claudeWeb.MODELS)
     supported: true,
 }]));
 
+// Grok web models, in the same registry shape. Registered the same way as the Claude
+// ones so a picker, a capabilities endpoint and the bridge all see three providers.
+const GROK_MODEL_CONFIGS = Object.fromEntries(Object.entries(grokWeb.MODELS).map(([id, cfg]) => [id, {
+    model_type: 'grok',
+    provider: grokWeb.PROVIDER,
+    web_model: cfg.web,
+    real_model: cfg.label,
+    thinking_enabled: cfg.thinking,
+    search_enabled: true,
+    capabilities: { reasoning: cfg.thinking, web_search: true, files: false, vision: true },
+    supported: true,
+}]));
+
 function hasClaudeAccount() {
     return accounts.some(a => a.provider === claudeWeb.PROVIDER && accountHasCredentials(a));
+}
+
+function hasGrokAccount() {
+    return accounts.some(a => a.provider === grokWeb.PROVIDER && accountHasCredentials(a));
 }
 
 // Which upstream serves this model id. DeepSeek is the default in every ambiguous
 // case; an explicit `claude/…` or `anthropic/…` prefix is an instruction rather than
 // a hint, and routes to Claude even with no Claude login, so the failure says
 // "no Claude account" instead of quietly answering with a different model.
-function resolveProvider(model, { claudeReady = hasClaudeAccount() } = {}) {
+function resolveProvider(model, { claudeReady = hasClaudeAccount(), grokReady = hasGrokAccount() } = {}) {
     const raw = String(model || '').toLowerCase().trim();
+    // An explicit prefix is an instruction: it routes even with no login, so the failure
+    // names the missing account instead of answering with a different upstream.
     if (/^(?:claude|anthropic)\//.test(raw)) return claudeWeb.PROVIDER;
+    if (/^(?:grok|xai|x\.ai)\//.test(raw)) return grokWeb.PROVIDER;
+    if (grokReady && grokWeb.isGrokModel(raw)) return grokWeb.PROVIDER;
     if (!claudeReady) return 'deepseek';
     return claudeWeb.isClaudeModel(raw) ? claudeWeb.PROVIDER : 'deepseek';
 }
 
 // The ids a provider can serve right now, for /v1/models and its docs.
 function providerModelIds(provider = 'deepseek') {
-    return provider === claudeWeb.PROVIDER ? Object.keys(CLAUDE_MODEL_CONFIGS) : SUPPORTED_MODEL_IDS;
+    if (provider === claudeWeb.PROVIDER) return Object.keys(CLAUDE_MODEL_CONFIGS);
+    if (provider === grokWeb.PROVIDER) return Object.keys(GROK_MODEL_CONFIGS);
+    return SUPPORTED_MODEL_IDS;
 }
 
 // ─── DeepSeek ⇄ Claude bridge ─────────────────────────────────────────────
@@ -1463,7 +1506,7 @@ function providerModelIds(provider = 'deepseek') {
 // image the other transport cannot carry. An explicit `claude/…` or `anthropic/…`
 // prefix stays an instruction: a caller who names Claude is not quietly answered by
 // DeepSeek, and the reverse holds for a pinned DeepSeek model.
-const PROVIDER_LABELS = { deepseek: 'DeepSeek', claude: 'Claude' };
+const PROVIDER_LABELS = { deepseek: 'DeepSeek', claude: 'Claude', grok: 'Grok' };
 const BRIDGE_MODELS = {
     // target provider -> { source model id: target model id }
     claude: {
@@ -1476,11 +1519,24 @@ const BRIDGE_MODELS = {
         'claude-opus-4-1': 'deepseek-v4-flash-thinking',
         'claude-sonnet-4-5': 'deepseek-v4-flash-thinking',
         'claude-haiku-4-5': 'deepseek-v4-flash',
+        'grok-4': 'deepseek-v4-flash-thinking',
+        'grok-4-fast': 'deepseek-v4-flash',
+        'grok-3': 'deepseek-v4-flash',
+        'grok-code-fast-1': 'deepseek-v4-flash',
+    },
+    grok: {
+        'deepseek-v4-flash-thinking': 'grok-4',
+        'deepseek-v4-flash-thinking-nosearch': 'grok-4',
+        'deepseek-v4-flash': 'grok-4-fast',
+        'deepseek-v4-flash-nosearch': 'grok-4-fast',
     },
 };
 
+// The pool a bridged hop moves to. DeepSeek is the fallback for every other side; a
+// Claude request falls back to DeepSeek, and a Grok one does the same rather than
+// inventing a Grok→Claude mapping the transports were never tested against.
 function alternateProvider(provider) {
-    return provider === claudeWeb.PROVIDER ? 'deepseek' : claudeWeb.PROVIDER;
+    return provider === claudeWeb.PROVIDER ? 'deepseek' : (provider === grokWeb.PROVIDER ? 'deepseek' : claudeWeb.PROVIDER);
 }
 
 // On by default: a gateway with both pools loaded should use both. SEEK_CROSS_PROVIDER_FALLBACK_OFF=1
@@ -1516,22 +1572,31 @@ function bridgeHealth() {
 
 // The equivalent model on another upstream, or null when there is no honest match.
 function bridgeModelFor(model, targetProvider) {
-    const target = targetProvider === claudeWeb.PROVIDER ? claudeWeb.PROVIDER : 'deepseek';
-    const source = target === claudeWeb.PROVIDER ? 'deepseek' : claudeWeb.PROVIDER;
+    const target = targetProvider === claudeWeb.PROVIDER ? claudeWeb.PROVIDER
+        : targetProvider === grokWeb.PROVIDER ? grokWeb.PROVIDER : 'deepseek';
     const raw = String(model || '').toLowerCase().trim();
-    const canonical = source === claudeWeb.PROVIDER
-        ? claudeWeb.resolveModel(raw).gateway
-        : canonicalizeModelId(raw);
+    // Canonicalise on the side the request came from, then look the target up. An empty
+    // id means "the provider default", which on a DeepSeek target is the Claude default's
+    // class — the behaviour the bridge had before a third provider existed.
+    let canonical;
+    if (grokWeb.isGrokModel(raw)) canonical = grokWeb.resolveModel(raw).gateway;
+    else if (raw === '' || claudeWeb.isClaudeModel(raw)) canonical = claudeWeb.resolveModel(raw).gateway;
+    else canonical = canonicalizeModelId(raw);
     const table = BRIDGE_MODELS[target] || {};
     if (table[canonical]) return table[canonical];
     // A dated id this build has never heard of: match by class rather than refuse.
     if (target === claudeWeb.PROVIDER) {
-        if (/thinking|reason|opus/.test(canonical)) return 'claude-sonnet-4-5';
-        if (/flash|sonnet|haiku|default/.test(canonical)) return 'claude-haiku-4-5';
+        if (/thinking|reason|opus|grok-4$/.test(canonical)) return 'claude-sonnet-4-5';
+        if (/flash|sonnet|haiku|default|fast/.test(canonical)) return 'claude-haiku-4-5';
         return null;
     }
-    if (/opus|sonnet|thinking/.test(canonical)) return 'deepseek-v4-flash-thinking';
-    if (/haiku|flash/.test(canonical)) return 'deepseek-v4-flash';
+    if (target === grokWeb.PROVIDER) {
+        if (/thinking|reason|opus|sonnet/.test(canonical)) return 'grok-4';
+        if (/flash|haiku|fast/.test(canonical)) return 'grok-4-fast';
+        return null;
+    }
+    if (/opus|sonnet|thinking|grok-4$/.test(canonical)) return 'deepseek-v4-flash-thinking';
+    if (/haiku|flash|fast/.test(canonical)) return 'deepseek-v4-flash';
     return null;
 }
 
@@ -1650,6 +1715,19 @@ function canonicalizeModelId(model) {
     return id;
 }
 function resolveModelConfig(model, provider = 'deepseek') {
+    if (provider === grokWeb.PROVIDER) {
+        const resolved = grokWeb.resolveModel(model);
+        return GROK_MODEL_CONFIGS[resolved.gateway] || {
+            model_type: 'grok',
+            provider: grokWeb.PROVIDER,
+            web_model: resolved.web,
+            real_model: resolved.label,
+            thinking_enabled: resolved.thinking,
+            search_enabled: true,
+            capabilities: { reasoning: resolved.thinking, web_search: true, files: false, vision: true },
+            supported: true,
+        };
+    }
     if (provider === claudeWeb.PROVIDER) {
         const resolved = claudeWeb.resolveModel(model);
         return CLAUDE_MODEL_CONFIGS[resolved.gateway] || {
@@ -2251,6 +2329,73 @@ function claudeRequestError(error, account, agentTag) {
     return err;
 }
 
+function grokRequestError(error, account, agentTag) {
+    if (!(error instanceof grokWeb.GrokWebError)) return error;
+    const status = error.status || 502;
+    console.log(`${agentTag} Grok ${error.type} (HTTP ${status}): ${clipText(error.message, 160)}`);
+    if (status === 429) {
+        return accountRateLimitError(account, error.message, error.retryAfter ? String(error.retryAfter) : null, 'grok completion', 429);
+    }
+    markAccountFailure(account, status, 'grok completion', error.retryAfter ? String(error.retryAfter) : null, error.message);
+    const err = createUpstreamHttpError(status, error.message, error.retryAfter ? String(error.retryAfter) : null);
+    err.accountId = account?.id || null;
+    if (status === 401 || status === 403) {
+        err.accountAuthFailed = true;
+        err.accountFailover = true;
+    } else if (status >= 500) {
+        err.accountServerFailed = true;
+        err.accountFailover = true;
+    }
+    return err;
+}
+
+// grok.com has no separate "create a conversation" call: the first request opens one and
+// hands back its id in the stream, so the agent session takes that id as its remote chat.
+async function askGrokStream({ prompt, agentId, model, freshSessionPrompt, lockHolder = null, excludedAccountIds = null }) {
+    const session = getOrCreateAgentSession(agentId);
+    const hadRemoteSession = Boolean(session.id);
+    let account = null;
+    for (let attempt = 0; ; attempt++) {
+        account = selectAccountForSession(session, lockHolder, excludedAccountIds, grokWeb.PROVIDER);
+        const waited = await acquireAccountChatLock(account, lockHolder);
+        if (!waited || (accountCanServe(account) && session.accountId === account.id)) break;
+        releaseAccountChatLock(lockHolder);
+        if (attempt >= accounts.length) {
+            throw concurrentChatBlocked(
+                `Agent session ${agentId} kept moving between Grok logins while this request waited for one. Retry shortly.`,
+                { retryAfter: 1 },
+            );
+        }
+    }
+    account.lastUsedAt = Date.now();
+    const agentTag = `[${agentId}/acct:${account.id}]`;
+    const rollover = prepareSessionForPrompt(session);
+    const accountRotationReset = hadRemoteSession && !session.id;
+    const promptUsed = (accountRotationReset || rollover) ? freshSessionPrompt : prompt;
+    if (accountRotationReset) console.log(`${agentTag} Account rotation reset the previous Grok conversation; using recovery prompt.`);
+
+    try {
+        const { resp, stream } = await grokWeb.completeStream({
+            config: account.config,
+            conversationId: session.id || null,
+            parentMessageUuid: session.parentMessageId || null,
+            prompt: promptUsed,
+            model,
+            onConversation: (id) => {
+                if (session.id) return;
+                session.id = id;
+                session.accountId = account.id;
+                session.createdAt = Date.now();
+                session.messageCount = 0;
+                console.log(`${agentTag} Opened Grok conversation ${id}`);
+            },
+        });
+        return { resp: { ok: true, status: resp.status, body: stream }, agentId, account, promptUsed, freshSessionReset: accountRotationReset || Boolean(rollover) };
+    } catch (error) {
+        throw grokRequestError(error, account, agentTag);
+    }
+}
+
 async function askClaudeStream({ prompt, agentId, model, freshSessionPrompt, lockHolder = null, excludedAccountIds = null }) {
     const session = getOrCreateAgentSession(agentId);
     const hadRemoteSession = Boolean(session.id);
@@ -2312,6 +2457,9 @@ async function askClaudeStream({ prompt, agentId, model, freshSessionPrompt, loc
 async function askDeepSeekStream(prompt, agentId, model = DEFAULT_MODEL_ID, freshSessionPrompt = prompt, lockHolder = null, imageContext = null, webFlags = null, excludedAccountIds = null, provider = 'deepseek') {
     if (provider === claudeWeb.PROVIDER) {
         return askClaudeStream({ prompt, agentId, model, freshSessionPrompt, lockHolder, excludedAccountIds });
+    }
+    if (provider === grokWeb.PROVIDER) {
+        return askGrokStream({ prompt, agentId, model, freshSessionPrompt, lockHolder, excludedAccountIds });
     }
     const modelCfg = resolveModelConfig(model);
     const thinking_enabled = webFlags?.thinking_enabled ?? modelCfg.thinking_enabled;
@@ -5264,6 +5412,46 @@ async function adminImportClaudeAccount(name, input, dir) {
     account.claudeOrg = config.org || null;
     return { account, result, replaced: Boolean(existing) };
 }
+// A Grok login is a cookie jar for the same reason a Claude one is: grok.com
+// authenticates with `sso`, and there is no token to paste. Verification asks the
+// session endpoint, which costs no generation quota.
+async function adminImportGrokAccount(name, input, dir) {
+    const config = grokWeb.normalizeConfig({ provider: grokWeb.PROVIDER, ...input });
+    if (!grokWeb.hasCredentials(config)) {
+        throw new AdminHttpError(422, 'invalid_auth', 'A Grok login needs the grok.com cookie (sso=…), including the Cloudflare cookies the browser holds.');
+    }
+    const duplicate = accounts.find(a => a.provider === grokWeb.PROVIDER && a.config?.cookie === config.cookie);
+    if (duplicate) {
+        throw new AdminHttpError(409, 'duplicate_account', `This Grok login is already loaded as ${duplicate.id}`, { account: duplicate.id });
+    }
+    let probe = { kind: 'skipped', ok: false, status: 0 };
+    if (IMPORT_VERIFY) {
+        probe = await grokWeb.probeLogin(config, { timeoutMs: 15000 });
+        if (!probe.ok) {
+            throw new AdminHttpError(probe.status === 401 || probe.status === 403 ? 401 : 502, 'auth_verify_failed',
+                `grok.com rejected this cookie: ${probe.detail || 'verification failed'}`, { probe });
+        }
+    }
+    const wanted = name.trim().toLowerCase();
+    const existing = accounts.find(a => a.provider === grokWeb.PROVIDER && String(a.config?.name || a.label || a.id || '').trim().toLowerCase() === wanted);
+    const target = existing?.file
+        ? path.resolve(existing.file)
+        : path.join(dir, `${accountSlug(name, candidate => accounts.some(a => a.id === candidate) || fs.existsSync(path.join(dir, `${candidate}.json`)))}.json`);
+    try {
+        fs.mkdirSync(dir, { recursive: true, mode: 0o700 });
+        writeAuthFileAtomic(target, { name, ...config });
+    } catch (e) {
+        throw new AdminHttpError(500, 'auth_file_write_failed', `Could not write auth file ${path.basename(target)}: ${e.code || 'error'}`);
+    }
+    console.log(`[admin] imported Grok login ${name} -> ${path.basename(target)} (probe: ${probe.kind})`);
+    const result = adminReloadAccounts();
+    const account = accounts.find(a => a.file && path.resolve(a.file) === target);
+    if (!result.ok || !account) {
+        throw new AdminHttpError(500, 'import_not_loaded', `Wrote ${path.basename(target)} but the reload did not load it.`, { errors: result.errors || [] });
+    }
+    account.lastProbe = { ...probe, at: Date.now() };
+    return { account, result, replaced: Boolean(existing) };
+}
 async function adminImportAccount(body) {
     const name = validAccountName(body.name);
     if (!body.auth || typeof body.auth !== 'object' || Array.isArray(body.auth)) {
@@ -5273,11 +5461,11 @@ async function adminImportAccount(body) {
     if (!dir) {
         throw new AdminHttpError(409, 'import_unsupported', 'Auth files come from an explicit DEEPSEEK_AUTH_PATH list. Set DEEPSEEK_AUTH_DIR (or unset DEEPSEEK_AUTH_PATH) to import accounts from the dashboard.');
     }
-    // A declared provider wins; otherwise a cookie jar with no token is Claude's shape.
-    if (String(body.provider || '').toLowerCase() === claudeWeb.PROVIDER
-        || (!body.auth.token && claudeWeb.hasCredentials(body.auth))) {
-        return adminImportClaudeAccount(name, body.auth, dir);
-    }
+    // A declared provider wins; otherwise the jar's own cookie decides (grok.com's `sso`
+    // versus claude.ai's `sessionKey`), and only a token makes it a DeepSeek session.
+    const kind = detectProviderOf({ ...body.auth, provider: body.provider || body.auth.provider });
+    if (kind === grokWeb.PROVIDER) return adminImportGrokAccount(name, body.auth, dir);
+    if (kind === claudeWeb.PROVIDER) return adminImportClaudeAccount(name, body.auth, dir);
     // Lazy: the container image ships without scripts/; only this route needs it.
     const { normalizeAuth, validateAuth } = require('./scripts/auth_import');
     const auth = normalizeAuth(body.auth, {}, { useEnv: false });
@@ -6295,6 +6483,11 @@ const server = http.createServer(async (req, res) => {
                 data.push({ id, object: 'model', created: 1700000000, owned_by: 'claude-web', real_model: cfg.real_model, capabilities: cfg.capabilities });
             }
         }
+        if (hasGrokAccount()) {
+            for (const [id, cfg] of Object.entries(GROK_MODEL_CONFIGS)) {
+                data.push({ id, object: 'model', created: 1700000000, owned_by: 'grok-web', real_model: cfg.real_model, capabilities: cfg.capabilities });
+            }
+        }
         res.writeHead(200, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify({ object: 'list', data }));
         return;
@@ -6305,6 +6498,11 @@ const server = http.createServer(async (req, res) => {
         const data = { ...ALL_MODEL_CAPABILITIES };
         if (hasClaudeAccount()) {
             for (const [id, cfg] of Object.entries(CLAUDE_MODEL_CONFIGS)) {
+                data[id] = { id, real_model: cfg.real_model, model_type: cfg.model_type, provider: cfg.provider, thinking_enabled: cfg.thinking_enabled, search_enabled: cfg.search_enabled, capabilities: cfg.capabilities, supported: cfg.supported, unavailable_reason: null };
+            }
+        }
+        if (hasGrokAccount()) {
+            for (const [id, cfg] of Object.entries(GROK_MODEL_CONFIGS)) {
                 data[id] = { id, real_model: cfg.real_model, model_type: cfg.model_type, provider: cfg.provider, thinking_enabled: cfg.thinking_enabled, search_enabled: cfg.search_enabled, capabilities: cfg.capabilities, supported: cfg.supported, unavailable_reason: null };
             }
         }
@@ -8018,6 +8216,7 @@ module.exports = {
         canonicalizeModelId,
         MODEL_CONFIGS,
         CLAUDE_MODEL_CONFIGS,
+        GROK_MODEL_CONFIGS,
         SUPPORTED_MODEL_IDS,
         resolveModelConfig,
         resolveProvider,
@@ -8028,8 +8227,12 @@ module.exports = {
         providerHasReadyAccount,
         BRIDGE_MODELS,
         hasClaudeAccount,
+        hasGrokAccount,
+        detectProviderOf,
+        adminImportAccount,
         accountHeaders,
         claudeWeb,
+        grokWeb,
         ACCOUNTS_DIR,
         isKnownModel,
         isSupportedModel,

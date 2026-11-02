@@ -474,3 +474,56 @@ h1 {
   outline: 2px solid var(--accent);
   outline-offset: 1px;
 }
+
+/* A cookie the cookies API cannot read can still be pasted in. */
+.paste {
+  display: grid;
+  gap: 8px;
+  padding: 12px;
+  margin: 0 0 12px;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  background: var(--surface-soft);
+}
+
+.paste-label {
+  font-size: 12px;
+  color: var(--muted);
+}
+
+.paste-label code,
+.paste-hint code {
+  font-family: var(--font-mono, ui-monospace, monospace);
+  font-size: 11px;
+  color: var(--text);
+}
+
+.paste-input {
+  width: 100%;
+  resize: vertical;
+  padding: 8px 10px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--surface);
+  color: var(--text);
+  font-family: var(--font-mono, ui-monospace, monospace);
+  font-size: 11px;
+  line-height: 1.5;
+}
+
+.paste-input:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
+
+.paste-actions {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+.paste-hint {
+  font-size: 11px;
+  color: var(--muted);
+}

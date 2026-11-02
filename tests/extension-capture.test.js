@@ -20,7 +20,12 @@ function loadBackground({ cookies = [], stores = {}, fetchImpl } = {}) {
   const pageCalls = [];
   const fetches = [];
   const chrome = {
-    runtime: { id: 'test', lastError: null, onMessage: { addListener: (fn) => { listeners.message = fn; } }, sendMessage() {} },
+    runtime: {
+      id: 'test', lastError: null,
+      onMessage: { addListener: (fn) => { listeners.message = fn; } },
+      sendMessage() {},
+      getManifest: () => ({ version: MANIFEST.version }),
+    },
     storage: { local: { set: (obj) => { Object.assign(written, obj); return Promise.resolve(); }, get() {} } },
     webRequest: { onBeforeSendHeaders: { addListener: (fn) => { listeners.headers = fn; } } },
     cookies: {
@@ -288,8 +293,10 @@ function loadPopup(stored, { provider = 'claude' } = {}) {
   const chrome = {
     runtime: {
       id: 'test', lastError: null,
+      getManifest: () => ({ version: MANIFEST.version }),
       sendMessage(message, cb) {
         sent.push(message);
+        if (message.action === 'ping') { cb({ success: true, build: MANIFEST.version }); return; }
         if (message.action === 'export') { cb({ success: true, auth: stored }); return; }
         cb({ success: true });
       },
@@ -329,6 +336,85 @@ test('a stored jar without sessionKey reports the cookies it holds instead of "S
 test('a row marked hidden really disappears, which is what kept DeepSeek rows on the Claude tab', () => {
   const css = fs.readFileSync(path.join(ROOT, 'chrome-extension', 'popup.css'), 'utf8');
   assert.match(css, /\[hidden\]\s*\{[^}]*display:\s*none\s*!important/, '`display` on .check/.toggle overrides the bare [hidden] UA rule');
+});
+
+test('a pasted jar is parsed from a cookie line, a Cookie: header, or JSON', () => {
+  const { context } = loadBackground({});
+  const parse = context.parsePastedJar;
+  const plain = parse('sessionKey=sk-ant-1; cf_clearance=cf-1');
+  assert.equal(plain.sessionKey, 'sk-ant-1');
+  assert.deepEqual([...plain.names], ['sessionKey', 'cf_clearance'], 'the parsed jar crosses the vm realm');
+
+  const header = parse('Cookie: sessionKey=sk-ant-2; lastActiveOrg=org-2');
+  assert.equal(header.sessionKey, 'sk-ant-2', 'a copied header line is accepted');
+  assert.doesNotMatch(header.cookie, /^Cookie:/i);
+
+  const fromJson = parse(JSON.stringify([{ name: 'sessionKey', value: 'sk-ant-3' }, { name: 'cf_clearance', value: 'cf' }]));
+  assert.equal(fromJson.sessionKey, 'sk-ant-3');
+  assert.equal(fromJson.cookie, 'sessionKey=sk-ant-3; cf_clearance=cf');
+
+  assert.equal(parse('lastActiveOrg=org-only').sessionKey, '', 'a jar with no sessionKey is refused downstream');
+  assert.equal(parse('').cookie, '');
+});
+
+function messageSender(env) {
+  return (request) => new Promise((resolve) => {
+    const answered = env.listeners.message(request, {}, resolve);
+    setTimeout(() => resolve(undefined), 50);
+    void answered;
+  });
+}
+
+// The popup reported "The message port closed before a response was received": a worker
+// that returns without answering. Both sides are fixed — the worker always answers, and a
+// popup that meets a silent worker says so instead of failing anonymously.
+test('the worker answers every message, including one it does not know', async () => {
+  const env = loadBackground({});
+  const send = messageSender(env);
+
+  const ping = await send({ action: 'ping' });
+  assert.equal(ping.success, true);
+  assert.equal(ping.build, MANIFEST.version, 'the worker reports the version it was loaded from');
+
+  const unknown = await send({ action: 'somethingFromANewerBuild' });
+  assert.equal(unknown.success, false);
+  assert.match(unknown.error, /does not handle "somethingFromANewerBuild"/);
+  assert.match(unknown.error, /Reload/);
+});
+
+test('a pasted jar is verified and stored through the same key as a capture', async () => {
+  const env = loadBackground({
+    fetchImpl: async () => new Response(JSON.stringify([{ uuid: 'org-9', name: 'Pasted' }]), { status: 200 }),
+  });
+  const send = messageSender(env);
+
+  const refused = await send({ action: 'setClaudeCookie', cookie: 'lastActiveOrg=only' });
+  assert.equal(refused.success, false);
+  assert.match(refused.error, /no sessionKey/);
+
+  const ok = await send({ action: 'setClaudeCookie', cookie: 'sessionKey=sk-ant-paste; cf_clearance=cf' });
+  assert.equal(ok.success, true);
+  assert.equal(ok.auth.provider, 'claude');
+  assert.equal(ok.auth.org, 'org-9');
+  assert.equal(ok.auth._source, 'pasted');
+  assert.equal(env.written.claude_auth._verified, true, 'stored under the Claude key');
+});
+
+test('a stale worker is reported, not shown as a failed capture', () => {
+  const popup = fs.readFileSync(path.join(ROOT, 'chrome-extension', 'popup.js'), 'utf8');
+  assert.match(popup, /message port closed/);
+  assert.match(popup, /if \(WORKER_GONE\.test\(String\(err\.message \|\| ''\)\)\) \{ resolve\(undefined\); return; \}/);
+  assert.match(popup, /async function checkWorkerBuild\(\)/);
+  assert.match(popup, /The popup is v\$\{workerMismatch\.popup\} but the background worker is still v\$\{workerMismatch\.worker\}/);
+});
+
+test('the Claude tab offers a paste path for a jar the cookies API cannot see', () => {
+  const html = fs.readFileSync(path.join(ROOT, 'chrome-extension', 'popup.html'), 'utf8');
+  const popup = fs.readFileSync(path.join(ROOT, 'chrome-extension', 'popup.js'), 'utf8');
+  assert.match(html, /id="pasteSection"/);
+  assert.match(html, /id="pasteCookie"/);
+  assert.match(popup, /els\.pasteSection\.hidden = provider !== 'claude'/);
+  assert.match(popup, /send\('setClaudeCookie', \{ cookie \}\)/);
 });
 
 test('every extension file still parses', () => {

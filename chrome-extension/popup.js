@@ -38,6 +38,9 @@ const els = {
   rowSource:         document.getElementById('rowSource'),
   chkSignOut:        document.getElementById('chkSignOut'),
   signOutRow:        document.getElementById('signOutRow'),
+  pasteSection:      document.getElementById('pasteSection'),
+  pasteCookie:       document.getElementById('pasteCookie'),
+  btnPasteSave:      document.getElementById('btnPasteSave'),
   chkAutoPush:       document.getElementById('chkAutoPush'),
   autoPushRow:       document.getElementById('autoPushRow'),
 };
@@ -139,17 +142,56 @@ function inExtension() {
   return typeof chrome !== 'undefined' && typeof chrome.runtime?.id === 'string';
 }
 
+// Chrome keeps a service worker alive for its own idle window, so the popup (read fresh
+// from disk every time it opens) can be newer than the worker answering it. A worker that
+// does not know an action returns nothing, and Chrome reports that as a closed port.
+const WORKER_GONE = /message port closed|receiving end does not exist|could not establish connection|extension context invalidated/i;
+
 function send(action, data = {}) {
   return new Promise((resolve, reject) => {
     if (!inExtension()) {
       reject(new Error('Reload the unpacked extension, then open this popup from the toolbar.'));
       return;
     }
-    chrome.runtime.sendMessage({ action, ...data }, (response) => {
-      if (chrome.runtime.lastError) reject(new Error(chrome.runtime.lastError.message));
-      else resolve(response);
-    });
+    const finish = (response) => {
+      const err = chrome.runtime.lastError;
+      if (!err) { resolve(response); return; }
+      // A silent worker is not a failed capture: resolve `undefined` so the caller can
+      // say "reload the extension" — the only thing that actually fixes a stale worker.
+      if (WORKER_GONE.test(String(err.message || ''))) { resolve(undefined); return; }
+      reject(new Error(err.message));
+    };
+    try {
+      chrome.runtime.sendMessage({ action, ...data }, finish);
+    } catch (e) {
+      if (WORKER_GONE.test(String(e.message || ''))) resolve(undefined);
+      else reject(e);
+    }
   });
+}
+
+// The worker states its own manifest version. When it disagrees with the popup's, the two
+// halves of the extension are different builds and every capture is unreliable — so say so
+// before the user presses anything.
+let workerMismatch = null;
+async function checkWorkerBuild() {
+  const pong = await send('ping');
+  let mine = null;
+  try { mine = inExtension() ? chrome.runtime.getManifest().version : null; } catch { mine = null; }
+  if (!pong || !pong.build) { workerMismatch = { worker: null, popup: mine }; return workerMismatch; }
+  workerMismatch = pong.build === mine ? null : { worker: pong.build, popup: mine };
+  return workerMismatch;
+}
+
+function showReloadWarning() {
+  const detail = workerMismatch?.worker
+    ? `The popup is v${workerMismatch.popup} but the background worker is still v${workerMismatch.worker}.`
+    : 'The background worker did not answer.';
+  showCallout(
+    'error',
+    'Reload the extension',
+    `${detail} Open chrome://extensions, press Reload on this extension, then reopen the popup — an older worker cannot collect a claude.ai login.`
+  );
 }
 
 // ─── Render ─────────────────────────────────────────────────────────────────
@@ -257,8 +299,8 @@ function render(data) {
       'Session not found',
       claude
         ? (names.length
-          ? `Read ${names.length} claude.ai cookie${names.length === 1 ? '' : 's'} (${names.join(', ')}) but no sessionKey. Sign in at claude.ai, then read the tab again.`
-          : 'Use a tab signed in to claude.ai, then read it again.')
+          ? `Read ${names.length} claude.ai cookie${names.length === 1 ? '' : 's'} (${names.join(', ')}) but no sessionKey. Sign in at claude.ai and read the tab again — or paste the cookie below.`
+          : 'Use a tab signed in to claude.ai and read it again — or paste the cookie below.')
         : 'Sign in to DeepSeek and try again.'
     );
     els.googleSignInSection.hidden = claude;
@@ -271,7 +313,8 @@ async function loadAuth() {
   try {
     const response = await send('export', { provider });
     if (response === undefined) {
-      showCallout('error', 'Reload the extension', 'The background worker is an older build. Open chrome://extensions and press Reload on this extension.');
+      await checkWorkerBuild();
+      showReloadWarning();
       return;
     }
     if (!(response && response.success)) { showCallout('error', 'Could not read stored session', ''); return; }
@@ -295,8 +338,8 @@ async function loadAuth() {
         'warning',
         'No claude.ai session yet',
         names.length
-          ? `The stored jar holds ${names.length} cookie${names.length === 1 ? '' : 's'} (${names.join(', ')}) and no sessionKey. Sign in at claude.ai, then press Read current tab.`
-          : 'Nothing was captured yet. Open claude.ai in this browser, sign in, then press Read current tab.'
+          ? `The stored jar holds ${names.length} cookie${names.length === 1 ? '' : 's'} (${names.join(', ')}) and no sessionKey. Sign in at claude.ai and press Read current tab — or paste the cookie below.`
+          : 'Nothing was captured yet. Open claude.ai in this browser, sign in, then press Read current tab — or paste the cookie below.'
       );
       return;
     }
@@ -314,7 +357,8 @@ els.btnCollect.addEventListener('click', async () => {
   try {
     const response = await send(provider === 'claude' ? 'collectClaude' : 'collect');
     if (response === undefined) {
-      showCallout('error', 'Reload the extension', 'This build cannot collect a claude.ai login yet. Open chrome://extensions and press Reload on this extension.');
+      await checkWorkerBuild();
+      showReloadWarning();
       return;
     }
     if (response?.auth) render(response.auth);
@@ -595,6 +639,29 @@ els.chkAutoPush?.addEventListener('change', () => {
   try { chrome.storage.local.set({ [AUTO_PUSH_KEY]: autoPushOnCapture }); } catch { /* ignore */ }
 });
 
+// A pasted jar goes through the same verification and the same storage key as a captured
+// one, so Copy / Download / Push cannot tell where it came from.
+els.btnPasteSave?.addEventListener('click', async () => {
+  const cookie = String(els.pasteCookie.value || '').trim();
+  if (!cookie) {
+    showCallout('warning', 'Nothing pasted', 'Paste the claude.ai cookie line first, then press Use this cookie.');
+    return;
+  }
+  showCallout('warning', 'Checking the cookie…', 'Asking claude.ai who it belongs to.');
+  try {
+    const response = await send('setClaudeCookie', { cookie });
+    if (response === undefined) { await checkWorkerBuild(); showReloadWarning(); return; }
+    if (!response?.success) { showCallout('error', 'That cookie was refused', response?.error || 'claude.ai did not accept it.'); return; }
+    render(response.auth);
+    if (response.warning) {
+      showCallout('warning', 'Session captured, not verified', `${response.warning} It was still stored — Push will tell you if the pool rejects it.`);
+    }
+    if (autoPushOnCapture && exportReady() && !els.btnPush.disabled) els.btnPush.click();
+  } catch (e) {
+    showCallout('error', 'Could not use that cookie', e.message);
+  }
+});
+
 // Switching provider swaps the stored session and every provider-specific row, so a
 // DeepSeek capture is never shown as if it were a Claude login.
 function setProvider(next) {
@@ -608,8 +675,15 @@ function setProvider(next) {
   hideCallout();
   els.checkToken.hidden = provider === 'claude';
   els.signOutRow.hidden = provider === 'claude';
-  if (inExtension()) loadAuth();
-  else render({});
+  els.btnCopy.disabled = true;
+  els.btnSave.disabled = true;
+  els.btnPush.disabled = true;
+  els.pasteSection.hidden = provider !== 'claude';
+  if (inExtension()) {
+    checkWorkerBuild().then((mismatch) => { if (mismatch) { showReloadWarning(); return; } loadAuth(); });
+  } else {
+    render({});
+  }
 }
 
 for (const btn of providerButtons) {

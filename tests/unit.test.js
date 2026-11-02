@@ -270,7 +270,7 @@ test('Containerfile keeps the rootless Podman runtime minimal and fail-closed', 
     'COPY --chown=1000:1000 package.json server.js ./',
     // server.js requires lib/updater.js; the image still has no .git, so it reports updates as unavailable.
     // accounts-dir decides where logins live, claude-web is the second upstream.
-    'COPY --chown=1000:1000 lib/auth-health.js lib/auth-refresh.js lib/accounts-dir.js lib/claude-web.js lib/pow.js lib/updater.js ./lib/',
+    'COPY --chown=1000:1000 lib/auth-health.js lib/auth-refresh.js lib/accounts-dir.js lib/claude-web.js lib/grok-web.js lib/pow.js lib/updater.js ./lib/',
     'COPY --chown=1000:1000 scripts/lib/tui-menu.js ./scripts/lib/tui-menu.js',
     'COPY --chown=1000:1000 public/dashboard/index.html public/dashboard/*.css public/dashboard/*.js public/dashboard/*.png public/dashboard/*.jpg public/dashboard/*.woff2 public/dashboard/GEIST-LICENSE.txt ./public/dashboard/',
   ]);

@@ -449,13 +449,20 @@ DeepSeek can ban a login for days if two chats send on that same login at the sa
 
 Sticky means the proxy does not hop accounts in the middle of a live chat, except when that login is rate-limited or loses auth. If the login gets `401` or `403`, or DeepSeek rate-limits it, the login goes into cooldown and the old remote session is dropped. A rate-limited request does not fail: it moves right away to another ready login, on a new chat that gets the full transcript. After `401`/`403`, the next request moves.
 
-Directory of auth files:
+Logins live in a per-user store outside the checkout: `~/.seek/accounts` (`SEEK_HOME` moves it). Every clone of this repo and both providers read that one directory, so a fresh checkout is never empty and a login is never something git can see. Precedence is `DEEPSEEK_AUTH_DIR`, then the shared store, then an older in-tree `accounts/`, then the shared store again as the default target for the next capture.
 
 ```bash
-mkdir -p accounts
-npm run auth:import -- --input ~/Downloads/deepseek-auth.json --output ./accounts/worker-2.json
-chmod 600 accounts/*.json deepseek-auth.json
-DEEPSEEK_AUTH_DIR=./accounts NON_INTERACTIVE=1 npm start
+npm run auth -- --name work          # Chrome sign-in, stored automatically
+npm run claude:auth -- --name work   # same for a claude.ai login
+npm run accounts:share               # adopt an older checkout's accounts/ into the store
+```
+
+Import by hand, when the file already exists:
+
+```bash
+npm run auth:import -- --input ~/Downloads/deepseek-auth.json --output ~/.seek/accounts/worker-2.json
+chmod 600 ~/.seek/accounts/*.json
+NON_INTERACTIVE=1 npm start
 ```
 
 Or a comma-separated list:
@@ -554,6 +561,8 @@ Then restart the proxy.
 |---|---|
 | `npm run auth` | Menu: Chrome sign-in, import, status, delete the local file |
 | `npm run deepseek:auth` | Chrome capture of token and cookies |
+| `npm run claude:auth` | Chrome capture of a claude.ai login (`--cookie` for non-interactive, `--name` to label it) |
+| `npm run accounts:share` | Copy an older checkout's `accounts/` into `~/.seek/accounts` |
 | `npm run auth:import` | Import `deepseek-auth.json` or a browser cookie export |
 | `npm run doctor` | Check the files. Drop `--offline` to also hit PoW |
 | `npm run ratelimit` | One line per login: `ok`, `ratelimit`, `waf`, `auth` or `network`. `--json`, `--refresh`, `--whoami`, `--quarantine` |
@@ -591,7 +600,7 @@ Setup adds FreeDeepseekAPI as an opt-in profile. It does not replace Claude, GPT
 | OpenClaw | a `freedeepseek` provider | pick it explicitly |
 | Cursor | a snippet and launcher under `integrations/cursor/` | editor settings stay as they are |
 
-`--model` is always DeepSeek-V4.1-Flash, with native chat.deepseek.com search on. `-thinking` turns DeepThink on. `-nosearch` turns search off; the agent then keeps its own web tools. An old `-search` id maps to the same id without the suffix.
+`--model` is DeepSeek-V4.1-Flash by default, with native chat.deepseek.com search on. Once a Claude login is in the pool, `--model claude-sonnet-4-5` points the same agent at Claude instead — same base URL, same key, same endpoints. `-thinking` turns DeepThink on. `-nosearch` turns search off; the agent then keeps its own web tools. An old `-search` id maps to the same id without the suffix.
 
 `npm run verify:integrations` compares every agent config with the proxy that is actually running: the model ids it names, the context window it advertises (the proxy trims a prompt to `DEEPSEEK_MAX_PROMPT_CHARS`, so advertising 1M tokens only fills context that then gets cut), the base URL and key it sends, and whether the file still matches what setup writes. It reads only, and `--probe` adds one real completion. Exit code 2 lists what needs a fix.
 
@@ -840,6 +849,30 @@ curl http://127.0.0.1:9655/v1/model-capabilities
 
 Full table: [docs/models.md](docs/models.md).
 
+### Claude, in the same gateway
+
+A Claude login is merged into the same pool: same chat lock, same one-conversation-per-agent rule, same `/v1/chat/completions`, `/v1/messages` and `/v1/responses` endpoints, same dashboard. Which upstream answers is decided by the model id.
+
+| ID | Web model | What it does |
+|---|---|---|
+| `claude-sonnet-4-5` | `claude-sonnet-4-5-20250929` | Claude Sonnet 4.5, extended thinking on |
+| `claude-opus-4-1` | `claude-opus-4-1-20250805` | Claude Opus 4.1 |
+| `claude-haiku-4-5` | `claude-haiku-4-5-20251001` | Claude Haiku 4.5, fastest |
+
+`sonnet`, `opus` and `haiku` are aliases. `claude/…` or `anthropic/…` forces the Claude path even when no Claude login is loaded, so the error names the missing account rather than silently answering from DeepSeek. A dated id this build does not know (`claude-3-7-sonnet-20250219`) is forwarded as-is.
+
+With **no** Claude login loaded, `claude-sonnet-4-5` keeps resolving to DeepSeek, exactly as before, so an existing Claude Code setup does not change behaviour the day a Claude account is added to the file. `/v1/models` lists the Claude ids only once a Claude login is in the pool.
+
+```bash
+npm run claude:auth -- --name personal
+curl http://127.0.0.1:9655/v1/models | grep claude
+curl http://127.0.0.1:9655/v1/chat/completions \
+  -H 'Content-Type: application/json' \
+  -d '{"model":"claude-sonnet-4-5","messages":[{"role":"user","content":"hello"}]}'
+```
+
+The login is a cookie jar (`sessionKey` plus the Cloudflare cookies the browser earned), captured from a real browser session; there is no password input and nothing is typed into a chat. A rejected cookie marks that login `needs_auth` in the dashboard instead of failing every request that picks it.
+
 ---
 
 ## Endpoints
@@ -874,7 +907,10 @@ Full table: [docs/models.md](docs/models.md).
 | `PROXY_CORS_ORIGINS` | loopback | Extra exact browser origins |
 | `PROXY_ADMIN_ALLOW_REMOTE` | off | If `1`, `/admin/*` answers non-loopback clients even without `PROXY_API_KEY` |
 | `DEEPSEEK_AUTH_PATH` | `./deepseek-auth.json` | One file, or a comma-separated list |
-| `DEEPSEEK_AUTH_DIR` | `./accounts` when that directory exists | Every `*.json` in it |
+| `DEEPSEEK_AUTH_DIR` | `~/.seek/accounts`, else an in-tree `accounts/` | Every `*.json` in it |
+| `SEEK_HOME` | `~/.seek` | Where that shared store lives |
+| `CLAUDE_BASE_URL` | `https://claude.ai` | Claude web origin (a test fixture points it elsewhere) |
+| `CLAUDE_TIMEZONE` | `Europe/London` | Timezone sent with a Claude turn |
 | `DEEPSEEK_MAX_PROMPT_CHARS` | `120000` | Cap on what is sent upstream. Minimum 16000 |
 | `DEEPSEEK_SUMMARY_COMPACT` | on | When a prompt must be cut, summarize the dropped middle instead of discarding it |
 | `DEEPSEEK_SUMMARY_ACCOUNT` | any idle login | Pin the summarizer to one login. By default it takes a login that is not serving a chat |

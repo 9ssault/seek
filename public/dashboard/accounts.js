@@ -624,7 +624,7 @@
       nameHelp.textContent = !name ? '' : slug ? `Saved as accounts/${slug}.json` : 'Saved as accounts/account-N.json';
       const ready = state.ok && name.length > 0;
       submit.setAttribute('aria-disabled', String(!ready));
-      submit.setAttribute('data-tip', ready ? '' : !state.ok ? 'Drop a valid deepseek-auth.json first' : 'Enter a name');
+      submit.setAttribute('data-tip', ready ? '' : !state.ok ? `Drop a valid ${state.claude ? 'claude.ai cookie jar' : 'deepseek-auth.json'} first` : 'Enter a name');
     };
     // Anything that is not the auth file gets pointed back at the file to look for.
     const FIND_FILE = 'Find deepseek-auth.json, the file the extension downloaded (usually in Downloads), and drop that.';
@@ -665,7 +665,7 @@
       formErr.hidden = true;
       F.setPending(submit, 'Adding…');
       try {
-        const res = await F.api('POST', '/admin/accounts/import', { body: { name: nameInput.value.trim(), auth: state.obj } });
+        const res = await F.api('POST', '/admin/accounts/import', { body: { name: nameInput.value.trim(), provider: state.provider, auth: state.obj } });
         F.applyAccountUpdate(res);
         const acc = res.account;
         raw = '';

@@ -905,7 +905,10 @@ function selectAccountForSession(session, holder = null, excludedAccountIds = nu
     // The pool is shared, the transports are not: a DeepSeek login cannot answer a
     // Claude model and vice versa, so selection happens inside one provider's slice.
     const providerAccounts = accounts.filter(a => (a.provider || 'deepseek') === provider);
-    const label = provider === claudeWeb.PROVIDER ? 'Claude' : 'DeepSeek';
+    // A parked Grok pool used to report itself as DeepSeek here, which sent every
+    // question about the 429 to the wrong upstream.
+    const label = provider === claudeWeb.PROVIDER ? 'Claude'
+        : provider === grokWeb.PROVIDER ? 'Grok' : 'DeepSeek';
     if (holder?.pinnedAccountId) return selectPinnedAccount(session, String(holder.pinnedAccountId), now, provider);
     if (session.accountId && (!excludedAccountIds || !excludedAccountIds.has(session.accountId))) {
         const sticky = providerAccounts.find(a => a.id === session.accountId);
@@ -1587,6 +1590,10 @@ const BRIDGE_MODELS = {
         'grok-4-fast': 'deepseek-v4-flash',
         'grok-3': 'deepseek-v4-flash',
         'grok-code-fast-1': 'deepseek-v4-flash',
+        // The ids a grok.com account actually serves: without these a parked Grok pool
+        // could not hand the turn to DeepSeek at all, and the caller got a 429 instead.
+        'grok-3-reasoning': 'deepseek-v4-flash-thinking',
+        'grok-3-mini-companion': 'deepseek-v4-flash',
     },
     grok: {
         // Points at the ids a grok.com account actually serves; grok-4 and grok-4-fast are
@@ -1658,11 +1665,10 @@ function bridgeModelFor(model, targetProvider) {
     }
     if (target === grokWeb.PROVIDER) {
         if (/thinking|reason|opus|sonnet/.test(canonical)) return 'grok-3-reasoning';
-        if (/flash|haiku|fast/.test(canonical)) return 'grok-3-mini-companion';
+        if (/flash|haiku|fast|mini/.test(canonical)) return 'grok-3-mini-companion';
         return null;
-    }
-    if (/opus|sonnet|thinking|grok-4$/.test(canonical)) return 'deepseek-v4-flash-thinking';
-    if (/haiku|flash|fast/.test(canonical)) return 'deepseek-v4-flash';
+    }        if (/opus|sonnet|thinking|reasoning|grok-4$/.test(canonical)) return 'deepseek-v4-flash-thinking';
+    if (/haiku|flash|fast|mini/.test(canonical)) return 'deepseek-v4-flash';
     return null;
 }
 

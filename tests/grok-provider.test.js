@@ -270,3 +270,9 @@ test('bare newline-delimited JSON is parsed, not only SSE data frames', async ()
   assert.equal(frames.filter(f => f.p === 'response/content').map(f => f.v).join(''), 'bare works');
   assert.equal(frames.find(f => f.p === 'response/finish_reason').v, 'stop');
 });
+
+test('a parked Grok pool can hand the turn to DeepSeek', () => {
+  // Without these the bridge returned null and the caller got a 429 naming the wrong pool.
+  assert.equal(S.bridgeModelFor('grok-3-reasoning', 'deepseek'), 'deepseek-v4-flash-thinking');
+  assert.equal(S.bridgeModelFor('grok-3-mini-companion', 'deepseek'), 'deepseek-v4-flash');
+});

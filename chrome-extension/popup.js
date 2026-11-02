@@ -36,6 +36,8 @@ const els = {
   checkToken:        document.getElementById('checkToken'),
   rowCookie:         document.getElementById('rowCookie'),
   rowSource:         document.getElementById('rowSource'),
+  checkLimits:       document.getElementById('checkLimits'),
+  rowLimits:         document.getElementById('rowLimits'),
   chkSignOut:        document.getElementById('chkSignOut'),
   signOutRow:        document.getElementById('signOutRow'),
   pasteSection:      document.getElementById('pasteSection'),
@@ -280,6 +282,8 @@ function render(data) {
     rejected ? 'missing' : ready ? 'ready' : ''
   );
 
+  renderLimits();
+
   // Action buttons
   els.btnCopy.disabled = !ready;
   els.btnSave.disabled = !ready;
@@ -462,6 +466,11 @@ async function readPool() {
           .map(a => [String(a?.name || a?.id || '').toLowerCase(), a?.token_fingerprint || ''])
           .filter(([label]) => Boolean(label))),
         needsAuth: accounts.map(a => a && a.needs_auth ? String(a?.name || a?.id || '').toLowerCase() : '').filter(Boolean),
+        // Per-login limits, so the popup can show this account's windows rather than the
+        // pool's worst one. Keyed the same way needsAuth/tokens are.
+        limits: Object.fromEntries(accounts
+          .map(a => [String(a?.name || a?.id || '').toLowerCase(), a?.limits || null])
+          .filter(([label]) => Boolean(label))),
         // Highest published quota window across the pool, so the popup can show the same
         // limits the dashboard does instead of only a ready count.
         peak: (() => {
@@ -493,6 +502,36 @@ async function tokenFingerprint(token) {
   const bytes = new TextEncoder().encode(String(token || ''));
   const digest = await crypto.subtle.digest('SHA-256', bytes);
   return [...new Uint8Array(digest)].map(b => b.toString(16).padStart(2, '0')).join('').slice(0, 12);
+}
+
+// One login's limits, in the smallest readable form: published windows when the upstream
+// reports them, otherwise the gateway's own counters. Empty until the pool has the login.
+function limitsText(limits) {
+  if (!limits) return '';
+  const parts = [];
+  const windows = limits.windows || {};
+  for (const name of Object.keys(windows)) {
+    const used = Number(windows[name] && windows[name].utilization);
+    parts.push(Number.isFinite(used) ? `${name} ${Math.round(used * 100)}%` : `${name} —`);
+  }
+  if (!parts.length) {
+    const req = limits.requests || {};
+    if (Number(req['5h']) || Number(req['24h'])) parts.push(`${Number(req['5h']) || 0} in 5h`, `${Number(req['24h']) || 0} in 24h`);
+  }
+  if (limits.cooldown) parts.push('cooling down');
+  return parts.join(' · ');
+}
+
+function renderLimits() {
+  if (!els.checkLimits || !els.rowLimits) return;
+  const who = String((lastExport && (lastExport.email || lastExport.name)) || '').trim().toLowerCase();
+  const limits = who && poolSnapshot?.limits ? poolSnapshot.limits[who] : null;
+  const text = limitsText(limits);
+  els.checkLimits.hidden = !text;
+  els.rowLimits.textContent = text || '—';
+  els.rowLimits.title = limits && limits.source === 'upstream'
+    ? 'Quota windows published by the upstream on every turn.'
+    : 'Counted by the proxy: this upstream publishes no quota windows.';
 }
 
 function renderPool() {
@@ -743,12 +782,10 @@ for (const btn of providerButtons) {
   btn.addEventListener('click', () => {
     if (btn.dataset.provider !== provider) setProvider(btn.dataset.provider);
   });
-}
-
-if (inExtension()) {
+}  if (inExtension()) {
   loadSignOutPreference();
   setProvider('deepseek');
-  readPool().then((pool) => { poolSnapshot = pool; renderPool(); });
+  readPool().then((pool) => { poolSnapshot = pool; renderPool(); renderLimits(); });
 } else {
   setProvider('deepseek');
 }

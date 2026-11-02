@@ -90,6 +90,15 @@
       <span class="label">Capture</span>
       <span id="rowSource" class="value">Not read</span>
     </div>
+    <!-- What the proxy reports for this login: upstream quota windows where the provider
+         publishes them (claude.ai 5h/7d), otherwise the gateway's own 5h/24h counters. -->
+    <div class="check" id="checkLimits" hidden>
+      <span class="check-icon" aria-hidden="true">
+        <svg viewBox="0 0 24 24"><path d="M4 19V5"/><path d="M4 19h16"/><path d="M8 16v-5M12.5 16V8M17 16v-3"/></svg>
+      </span>
+      <span class="label">Limits</span>
+      <span id="rowLimits" class="value">—</span>
+    </div>
   </section>
 
   <!-- A login the cookies API cannot see (container tab, second profile, partitioned

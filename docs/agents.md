@@ -25,6 +25,54 @@ Setup only reads and writes files inside your home folder (or the project folder
 | OpenClaw | `freedeepseek` provider in `~/.openclaw/openclaw.json` | Select explicitly; existing primary model remains unchanged |
 | Cursor | Template + optional launcher in `integrations/cursor/` | Existing editor settings remain unchanged |
 
+## Tools on `/`: reverse engineering, pentest, OSINT
+
+`npm run setup:tools` writes the tools installed on this machine into OpenCode and Codex as slash commands, so an agent reaches for the real tool instead of approximating it. The registry lives in [`scripts/setup-tools.js`](../scripts/setup-tools.js); every entry names the tool, the exact invocation and the rule for reading its output.
+
+```bash
+npm run setup:tools              # installed tools only
+npm run setup:tools -- --all     # every entry, missing ones marked with how to install
+npm run setup:tools -- --only rea,jadx,pentest
+npm run setup:tools -- --dry-run
+npm run setup:tools -- --json
+```
+
+Written: `~/.config/opencode/command/<id>.md`, `~/.codex/prompts/<id>.md`, and for the tools that are present, `~/.config/opencode/skills/tool-<id>/SKILL.md`. A command file is loaded when you type it; the skill entry is one line, so the model knows the tool exists without carrying its manual in every turn.
+
+| Command | Tool | |
+|---|---|---|
+| `/rea` | `rea` (rea-agents) | binaries, Electron/JS apps, APKs, firmware, captures |
+| `/jadx`, `/apktool` | jadx, apktool | Android source, resources, repacking |
+| `/ghidra`, `/rizin`, `/ida` | analyzeHeadless, rizin, ida64 | static native work |
+| `/frida`, `/gdb` | frida, gdb | runtime hooks, crashes |
+| `/tshark`, `/nmap`, `/yara` | tshark, nmap, yara | traffic, services, signatures |
+| `/binwalk`, `/unblob` | binwalk, unblob | firmware signatures and extraction |
+| `/stool` | `stool` (this machine's OSINT workspace) | `hunt`, `profile`, `brief`, `note`, `notescan`, `entity`, `graph`, `pivot`, `track`, `bulk`, `ask` |
+| `/pentest` | [`plugins/hackingtool/`](../plugins/hackingtool/) | 183+ recon and OSINT tools behind `ht_run.py` |
+
+`/pentest` is [AKCodez/hackingtool-plugin](https://github.com/AKCodez/hackingtool-plugin), vendored so it does not depend on a clone somewhere else. It is a skill plus Python wrappers: `ht_preflight.py` reports the backend (native here — `nmap`, `nuclei`, `subfinder`, `httpx`, `ffuf` — with Docker as the fallback), `ht_search.py` finds a tool id, `ht_run.py` executes it and returns JSON. Its `${CLAUDE_PLUGIN_ROOT}` placeholder is resolved to the vendored path when the command is written.
+
+### A recon chain, end to end
+
+```
+/pentest example.com
+
+  preflight      verdict ready, backend native
+  ht_search      --q subfinder  → web_attack.Subfinder
+  ht_run         web_attack.Subfinder --args "-d example.com -all -silent"
+  ht_run         web_attack.Httpx --args "-silent -title -tech-detect" --stdin < subdomains.txt
+  ht_run         web_attack.Nuclei --args "-severity medium,high,critical -silent"
+  report         hosts that answered, tech, findings by severity, what was not covered
+```
+
+The rule the command carries: if a tool is missing, say so — do not substitute a `curl` loop and report it as a scan.
+
+### stool
+
+`/stool` drives the OSINT/CSINT workspace on this machine: `stool hunt <target>` detects the target kind, confirms, and runs the chain; `stool profile`/`brief` builds and prints the dossier; `stool note` extracts every value out of a pdf/docx/odt/epub and searches it; `stool entity candidates`, `stool graph`, `stool pivot`, `stool shared` and `stool stale` work the identifiers that are left. `stool --list` is the full verb list, and the command tells the agent to read it instead of inventing a verb.
+
+The workspace and this repository stay separate on purpose. stool's `reports/`, `profiles/`, `cache/`, `wordlists/`, `data/` and its sqlite files hold case material and personal identifiers; the repository ignores all of them (`.gitignore`), along with `accounts/*.json`, `deepseek-auth.json` and `.env*`. If you want the code itself tracked here, copy only the tracked set (`git ls-files` in that tree) into `stool/` — never the working directory.
+
 ## Images in coding agents
 
 - **Claude Code:** paste or attach an image normally. Its Anthropic `image` block is converted to a DeepSeek Web file.
@@ -73,23 +121,3 @@ Restoring copies the saved files back and **deletes files the run created**. The
 Copy-paste templates live in [`integrations/`](../integrations/).
 
 Sources: [Claude vision blocks](https://platform.claude.com/docs/en/build-with-claude/vision), [Codex CLI image flag](https://developers.openai.com/codex/cli/reference), [OpenAI image inputs](https://developers.openai.com/api/docs/guides/images-vision), [OpenCode custom providers](https://opencode.ai/docs/providers/), [OpenClaw custom providers](https://docs.openclaw.ai/gateway/config-tools).
-
-## Tools on `/`
-
-`npm run setup:tools` writes the reverse-engineering, pentest and OSINT tools installed on this machine into OpenCode and Codex as slash commands, so an agent reaches for the real tool instead of approximating it. The registry is [`scripts/setup-tools.js`](../scripts/setup-tools.js).
-
-```bash
-npm run setup:tools              # installed tools only
-npm run setup:tools -- --all     # every entry, missing ones marked with how to install
-npm run setup:tools -- --dry-run
-```
-
-Written to `~/.config/opencode/command/<id>.md` and `~/.codex/prompts/<id>.md`, plus a one-line skill entry under `~/.config/opencode/skills/tool-<id>/` for each tool that is present. A command loads when you type it; nothing is copied into every prompt.
-
-| Command | Tool |
-|---|---|
-| `/rea`, `/jadx`, `/apktool`, `/ghidra`, `/rizin`, `/ida`, `/frida`, `/gdb`, `/tshark`, `/nmap`, `/binwalk`, `/unblob`, `/yara` | the CLIs on this machine |
-| `/stool` | the OSINT/CSINT workspace (`hunt`, `profile`, `note`, `entity`, `graph`, `pivot`) |
-| `/pentest` | [AKCodez/hackingtool-plugin](https://github.com/AKCodez/hackingtool-plugin), vendored in `plugins/hackingtool/`, 183+ tools behind `ht_run.py` |
-
-Nothing local is tracked: `reports/`, `profiles/`, `cache/`, `data/`, `wordlists/`, databases and run artifacts are in `.gitignore`, along with `accounts/*.json`, `deepseek-auth.json` and `.env*`.

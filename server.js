@@ -22,6 +22,8 @@ const { spawn, spawnSync } = require('child_process');
 const pow = require('./lib/pow');
 const authHealth = require('./lib/auth-health');
 const authRefresh = require('./lib/auth-refresh');
+const accountsDir = require('./lib/accounts-dir');
+const claudeWeb = require('./lib/claude-web');
 const { createUpdater, RESTART_EXIT_CODE } = require('./lib/updater');
 const { t, loadUiLang, saveUiLang, pick, pause, printWordmark, browserOpenCommand } = require('./scripts/lib/tui-menu');
 
@@ -239,7 +241,9 @@ const SESSION_TTL_MS = 2 * 60 * 60 * 1000;  // 2 hours
 
 // === DeepSeek Web API Config — loaded from external config file ===
 const DS_CONFIG_PATH = process.env.DEEPSEEK_AUTH_PATH || path.join(__dirname, 'deepseek-auth.json');
-const ACCOUNTS_DIR = process.env.DEEPSEEK_AUTH_DIR || path.join(__dirname, 'accounts');
+// The login store lives outside the checkout (see lib/accounts-dir.js), so every
+// clone and both providers read the same pool.
+const ACCOUNTS_DIR = accountsDir.resolveAccountsDir();
 const DEFAULT_ACCOUNT_COOLDOWN_MS = envNumber('DEEPSEEK_ACCOUNT_COOLDOWN_MS', 10 * 60 * 1000);
 // Ceiling for the geometric backoff applied to a login that keeps getting throttled.
 const MAX_ACCOUNT_COOLDOWN_MS = envNumber('DEEPSEEK_MAX_ACCOUNT_COOLDOWN_MS', 30 * 60 * 1000);
@@ -307,6 +311,14 @@ function checkInboundRateLimit(ip) {
     return null;
 }
 
+// A Claude login has its own header set — cookie-only, no DeepSeek client headers,
+// plus the platform marker claude.ai expects. Kept beside the DeepSeek builder so
+// the two providers are visible side by side.
+function accountHeaders(config = DS_CONFIG) {
+    return claudeWeb.detectProvider(config) === claudeWeb.PROVIDER
+        ? claudeWeb.buildHeaders(config)
+        : buildBaseHeaders(config);
+}
 function buildBaseHeaders(config = DS_CONFIG) {
     const ua = pickUserAgent(config.token || 'default');
     return {
@@ -412,6 +424,10 @@ function readAccountFiles(paths) {
             if (!json || typeof json !== 'object') throw new Error('expected a JSON object');
             for (const entry of expandAuthFile(file, json)) {
                 authRefresh.normalizeConfig(entry.config);
+                claudeWeb.normalizeConfig(entry.config);
+                // Which upstream a login belongs to is a property of the file, not of
+                // the checkout: it travels with the account into the pool.
+                entry.provider = claudeWeb.detectProvider(entry.config);
                 loaded.push(entry);
             }
         } catch (e) {
@@ -467,18 +483,24 @@ function buildAccountsList(allLoaded, previous = []) {
     const relogged = [];
     loaded.forEach((entry, index) => {
         const { file, config, key = path.resolve(file), label = null, role = 'worker', merged = false } = entry;
+        const provider = entry.provider || claudeWeb.detectProvider(config);
         const prev = previousByKey.get(key);
         if (!prev || takenIds.has(prev.id)) return;
         previousByKey.delete(key);
         takenIds.add(prev.id);
-        const credentialsChanged = prev.config?.token !== config.token || prev.config?.cookie !== config.cookie;
+        // A changed provider is a changed login too: runtime state earned against one
+        // upstream means nothing to the other.
+        const credentialsChanged = prev.provider !== provider
+            || prev.config?.token !== config.token
+            || prev.config?.cookie !== config.cookie;
         prev.file = file;
         prev.key = key;
         prev.label = label;
         prev.role = role;
+        prev.provider = provider;
         prev.merged = merged;
         prev.config = config;
-        prev.headers = buildBaseHeaders(config);
+        prev.headers = accountHeaders(config);
         if (credentialsChanged) {
             prev.cooldownUntil = 0;
             prev.cooldownReason = null;
@@ -493,13 +515,14 @@ function buildAccountsList(allLoaded, previous = []) {
     loaded.forEach((entry, index) => {
         if (result[index]) return;
         const { file, config, key = path.resolve(file), label = null, role = 'worker', merged = false } = entry;
+        const provider = entry.provider || claudeWeb.detectProvider(config);
         // A per-login file already has a slug as its file name; only a merged entry
         // (one file holding many logins) has no name of its own to fall back on.
         const id = uniqueAccountId(merged ? (label || file) : file, takenIds);
         takenIds.add(id);
         result[index] = {
-            id, file, key, label, role, merged, config,
-            headers: buildBaseHeaders(config),
+            id, file, key, label, role, provider, merged, config,
+            headers: accountHeaders(config),
             ...newAccountRuntimeState(),
         };
         added.push(id);
@@ -512,12 +535,15 @@ function buildAccountsList(allLoaded, previous = []) {
     const unique = [];
     for (const account of result) {
         if (!account) continue;
-        const token = account.config?.token;
-        if (token && byToken.has(token)) {
+        // Claude is cookie-only, so its cookie jar is the thing that must not appear twice.
+        const identity = account.provider === claudeWeb.PROVIDER
+            ? (account.config?.cookie || '')
+            : (account.config?.token || '');
+        if (identity && byToken.has(identity)) {
             duplicates.push(account.id);
             continue;
         }
-        if (token) byToken.set(token, account.id);
+        if (identity) byToken.set(identity, account.id);
         unique.push(account);
     }
     return { list: unique, added, kept, removed, relogged, duplicates };
@@ -546,9 +572,18 @@ function loadDeepSeekConfig({ fatal = true } = {}) {
     }
     applyAccountsList(built);
     if (accounts.length > 0) {
-        console.log(`[DS-API] Loaded ${accounts.length} auth account(s): ${accounts.map(a => a.id).join(', ')}`);
+        const byProvider = accounts.reduce((acc, account) => {
+            const provider = account.provider || 'deepseek';
+            acc[provider] = (acc[provider] || 0) + 1;
+            return acc;
+        }, {});
+        const mix = Object.entries(byProvider).map(([provider, count]) => `${count} ${provider}`).join(', ');
+        console.log(`[DS-API] Loaded ${accounts.length} auth account(s) from ${accountsDir.shortPath(ACCOUNTS_DIR)} (${mix}): ${accounts.map(a => a.id).join(', ')}`);
         return true;
     }
+    // Name the store as well as the files: "no accounts found" was unanswerable when
+    // the pool read a directory nobody knew about.
+    console.error(`[DS-API] Auth store: ${accountsDir.describeStore(ACCOUNTS_DIR)}`);
     if (fatal) {
         console.error(`[DS-API] FATAL: Could not load any auth config. Expected ${paths.join(', ') || DS_CONFIG_PATH}`);
         process.exit(1);
@@ -640,7 +675,7 @@ async function runAccountHealthPass() {
             if ((account.cooldownUntil || 0) > Date.now()) continue;
             let probe;
             try {
-                probe = await authRefresh.probeAccountToken(account, { timeoutMs: 15000 });
+                probe = await probeAccount(account, { timeoutMs: 15000 });
             } catch (_) {
                 healthProbeState.failed++;
                 continue;
@@ -667,7 +702,8 @@ async function runAccountHealthPass() {
                 markAccountRateLimited(account, 'heartbeat probe', probe.retryAfterSec != null ? String(probe.retryAfterSec) : null, 429, 'heartbeat');
                 continue;
             }
-            if (probe.kind === 'waf') maybeAutoRefreshWaf(account, 401, probe.detail || 'waf');
+            // Only a DeepSeek login has a WAF token this refresher can renew.
+            if (probe.kind === 'waf' && (account.provider || 'deepseek') === 'deepseek') maybeAutoRefreshWaf(account, 401, probe.detail || 'waf');
             await new Promise(resolve => setTimeout(resolve, HEALTH_PROBE_BUSY_GAP_MS));
         }
     } finally {
@@ -676,8 +712,35 @@ async function runAccountHealthPass() {
     return healthProbeState;
 }
 
+// One probe, two transports. A DeepSeek login is checked with the token probe; a Claude
+// login is checked by asking claude.ai for its organisations, which is the same call the
+// first turn makes — so a working probe means a working turn.
+async function probeAccount(account, { timeoutMs = 15000 } = {}) {
+    if ((account.provider || 'deepseek') !== claudeWeb.PROVIDER) return authRefresh.probeAccountToken(account, { timeoutMs });
+    const started = Date.now();
+    try {
+        const list = await claudeWeb.listOrganizations(account.config || {}, { signal: AbortSignal.timeout(timeoutMs) });
+        const org = claudeWeb.pickOrganization(list);
+        if (!org) {
+            return { ok: false, kind: 'auth', status: 200, latencyMs: Date.now() - started, code: null, detail: 'this login belongs to no organisation' };
+        }
+        account.claudeOrg = String(org.uuid || org.id);
+        return { ok: true, kind: 'ok', status: 200, latencyMs: Date.now() - started, code: null };
+    } catch (error) {
+        const status = Number(error.status) || 0;
+        const kind = status === 401 || status === 403 ? 'auth' : (status === 429 ? 'ratelimit' : 'network');
+        return {
+            ok: false, kind, status, latencyMs: Date.now() - started, code: null,
+            detail: clipText(error.message, 160),
+            retryAfterSec: error.retryAfter || null,
+        };
+    }
+}
 function hasAuthConfig() { return accounts.some(accountHasCredentials); }
 function accountHasCredentials(account) {
+    // Claude is cookie-only: the sessionKey cookie is the whole credential. DeepSeek
+    // needs both halves of its web session (token plus cookies).
+    if (account?.provider === claudeWeb.PROVIDER) return claudeWeb.hasCredentials(account.config || {});
     return Boolean(account?.config?.token && account?.config?.cookie);
 }
 function isAccountEnabled(account) {
@@ -702,6 +765,7 @@ function accountStatus(account) {
         id: account.id,
         // `display` is the readable label from a merged auth file; `name` is the id.
         name: String(account.config.display || account.config.name || account.id),
+        provider: account.provider || 'deepseek',
         file: path.basename(account.file || ''),
         enabled: isAccountEnabled(account),
         role: account.role || 'worker',
@@ -791,9 +855,12 @@ function pinnedAccountError(status, type, message, retryAfter = null) {
     if (retryAfter) err.retryAfter = retryAfter;
     return err;
 }
-function selectPinnedAccount(session, pinnedId, now) {
+function selectPinnedAccount(session, pinnedId, now, provider = 'deepseek') {
     const account = accounts.find(a => a.id === pinnedId);
     if (!account) throw pinnedAccountError(404, 'account_not_found', `Account ${pinnedId} is not loaded. Pick another account or reload accounts.`);
+    if ((account.provider || 'deepseek') !== provider) {
+        throw pinnedAccountError(409, 'account_provider_mismatch', `Account ${pinnedId} is a ${account.provider} login and cannot serve a ${provider} model.`);
+    }
     if (!accountHasCredentials(account)) throw pinnedAccountError(409, 'account_unavailable', `Account ${pinnedId} has no credentials. Import a fresh login for it.`);
     if (!isAccountEnabled(account)) throw pinnedAccountError(409, 'account_unavailable', `Account ${pinnedId} is paused. Resume it in /dashboard or pick another account.`);
     if ((account.cooldownUntil || 0) > now) {
@@ -807,35 +874,43 @@ function selectPinnedAccount(session, pinnedId, now) {
     }
     return account;
 }
-function selectAccountForSession(session, holder = null, excludedAccountIds = null) {
+function selectAccountForSession(session, holder = null, excludedAccountIds = null, provider = 'deepseek') {
     const now = Date.now();
-    if (holder?.pinnedAccountId) return selectPinnedAccount(session, String(holder.pinnedAccountId), now);
+    // The pool is shared, the transports are not: a DeepSeek login cannot answer a
+    // Claude model and vice versa, so selection happens inside one provider's slice.
+    const providerAccounts = accounts.filter(a => (a.provider || 'deepseek') === provider);
+    const label = provider === claudeWeb.PROVIDER ? 'Claude' : 'DeepSeek';
+    if (holder?.pinnedAccountId) return selectPinnedAccount(session, String(holder.pinnedAccountId), now, provider);
     if (session.accountId && (!excludedAccountIds || !excludedAccountIds.has(session.accountId))) {
-        const sticky = accounts.find(a => a.id === session.accountId);
+        const sticky = providerAccounts.find(a => a.id === session.accountId);
         if (sticky && accountCanServe(sticky, now)) {
             return sticky;
         }
+        // No sticky match: either the login is gone or this session belongs to the other
+        // provider. Either way the remote chat cannot be continued.
         resetRemoteSession(session);
         session.accountId = null;
     } else if (session.accountId && excludedAccountIds?.has(session.accountId)) {
         resetRemoteSession(session);
         session.accountId = null;
     }
-    const ready = accounts.filter(a => accountCanServe(a, now) && (!excludedAccountIds || !excludedAccountIds.has(a.id)));
+    const ready = providerAccounts.filter(a => accountCanServe(a, now) && (!excludedAccountIds || !excludedAccountIds.has(a.id)));
     if (ready.length === 0) {
-        const waiting = accounts.filter(a => accountHasCredentials(a) && isAccountEnabled(a)).sort((a, b) => a.cooldownUntil - b.cooldownUntil)[0];
+        const waiting = providerAccounts.filter(a => accountHasCredentials(a) && isAccountEnabled(a)).sort((a, b) => a.cooldownUntil - b.cooldownUntil)[0];
         if (waiting) {
             const waitSec = Math.max(1, Math.ceil((waiting.cooldownUntil - now) / 1000));
             // Tagged so the request handler returns 429 + Retry-After instead of a
             // generic 500 (integrator backoff keys on the status code, not the text).
-            const err = new Error(`All DeepSeek auth accounts are cooling down. Retry in ~${waitSec}s or import a fresh account with npm run auth:import.`);
+            const err = new Error(`All ${label} auth accounts are cooling down. Retry in ~${waitSec}s or import a fresh account with npm run auth:import.`);
             err.status = 429; err.retryAfter = waitSec; err.type = 'rate_limit';
             throw err;
         }
-        const switchedOff = accounts.filter(a => accountHasCredentials(a) && !isAccountEnabled(a)).map(a => a.id);
+        const switchedOff = providerAccounts.filter(a => accountHasCredentials(a) && !isAccountEnabled(a)).map(a => a.id);
         const noAuth = new Error(switchedOff.length
-            ? `Every DeepSeek auth account with credentials is paused or disabled (${switchedOff.join(', ')}). Resume one in /dashboard, or set "enabled": true in its auth file and reload.`
-            : 'No valid DeepSeek auth accounts. Run npm run auth or npm run auth:import.');
+            ? `Every ${label} auth account with credentials is paused or disabled (${switchedOff.join(', ')}). Resume one in /dashboard, or set "enabled": true in its auth file and reload.`
+            : provider === claudeWeb.PROVIDER
+                ? `No ${label} auth account is loaded. Put a claude.ai cookie at ${accountsDir.describeStore(ACCOUNTS_DIR)}, or run npm run claude:auth.`
+                : `No valid ${label} auth accounts. Run npm run auth or npm run auth:import (store: ${accountsDir.describeStore(ACCOUNTS_DIR)}).`);
         noAuth.status = 503; noAuth.type = 'no_auth';
         throw noAuth;
     }
@@ -1360,6 +1435,41 @@ const MODEL_CONFIGS = {
     }),
 };
 
+// Claude web models, in the same registry shape as the DeepSeek ones. They are
+// routable only when a Claude login is loaded, so an existing Claude Code setup that
+// points `claude-sonnet-4-5` at this gateway keeps getting DeepSeek until someone
+// adds a Claude account — the merge adds a provider, it does not take one away.
+const CLAUDE_MODEL_CONFIGS = Object.fromEntries(Object.entries(claudeWeb.MODELS).map(([id, cfg]) => [id, {
+    model_type: 'claude',
+    provider: claudeWeb.PROVIDER,
+    web_model: cfg.web,
+    real_model: cfg.label,
+    thinking_enabled: cfg.thinking,
+    search_enabled: false,
+    capabilities: { reasoning: cfg.thinking, web_search: false, files: false, vision: true },
+    supported: true,
+}]));
+
+function hasClaudeAccount() {
+    return accounts.some(a => a.provider === claudeWeb.PROVIDER && accountHasCredentials(a));
+}
+
+// Which upstream serves this model id. DeepSeek is the default in every ambiguous
+// case; an explicit `claude/…` or `anthropic/…` prefix is an instruction rather than
+// a hint, and routes to Claude even with no Claude login, so the failure says
+// "no Claude account" instead of quietly answering with a different model.
+function resolveProvider(model, { claudeReady = hasClaudeAccount() } = {}) {
+    const raw = String(model || '').toLowerCase().trim();
+    if (/^(?:claude|anthropic)\//.test(raw)) return claudeWeb.PROVIDER;
+    if (!claudeReady) return 'deepseek';
+    return claudeWeb.isClaudeModel(raw) ? claudeWeb.PROVIDER : 'deepseek';
+}
+
+// The ids a provider can serve right now, for /v1/models and its docs.
+function providerModelIds(provider = 'deepseek') {
+    return provider === claudeWeb.PROVIDER ? Object.keys(CLAUDE_MODEL_CONFIGS) : SUPPORTED_MODEL_IDS;
+}
+
 // Search used to be opt-in through a `-search` suffix. It is the default now,
 // so those IDs resolve to the same model without the suffix.
 const LEGACY_SEARCH_SUFFIX = /-search$/;
@@ -1474,7 +1584,20 @@ function canonicalizeModelId(model) {
     if (/claude[-_. ]?(sonnet|haiku)/.test(id)) return 'deepseek-v4-flash';
     return id;
 }
-function resolveModelConfig(model) {
+function resolveModelConfig(model, provider = 'deepseek') {
+    if (provider === claudeWeb.PROVIDER) {
+        const resolved = claudeWeb.resolveModel(model);
+        return CLAUDE_MODEL_CONFIGS[resolved.gateway] || {
+            model_type: 'claude',
+            provider: claudeWeb.PROVIDER,
+            web_model: resolved.web,
+            real_model: resolved.label,
+            thinking_enabled: resolved.thinking,
+            search_enabled: false,
+            capabilities: { reasoning: resolved.thinking, web_search: false, files: false, vision: true },
+            supported: true,
+        };
+    }
     const requested = canonicalizeModelId(model);
     return MODEL_CONFIGS[requested] || MODEL_CONFIGS[DEFAULT_MODEL_ID];
 }
@@ -2009,7 +2132,122 @@ async function readCompletionFailure(resp, account, label) {
     return { errText, retryAfter };
 }
 
-async function askDeepSeekStream(prompt, agentId, model = DEFAULT_MODEL_ID, freshSessionPrompt = prompt, lockHolder = null, imageContext = null, webFlags = null, excludedAccountIds = null) {
+// === Claude web transport ====================================================
+// The pool, the chat locks, the credential checks and the session bookkeeping are
+// shared with DeepSeek; only the wire is different. This path keeps that contract:
+// take the login's chat lock, keep or create the remote conversation, and hand back
+// a body of DeepSeek frames, so nothing downstream has to know which upstream
+// answered the prompt.
+const CLAUDE_META_TIMEOUT_MS = envNumber('CLAUDE_META_TIMEOUT_MS', 30 * 1000);
+
+// A Claude failure parks the login the same way a DeepSeek one does, but without the
+// DeepSeek-specific WAF refresher: a Cloudflare challenge on claude.ai needs a fresh
+// cookie jar from the browser, not a re-run of the DeepSeek token refresh.
+function markClaudeFailure(account, status, detail = '', retryAfter = null) {
+    if (!account) return;
+    if (status === 429) {
+        markAccountRateLimited(account, detail, retryAfter, 429, 'claude');
+        return;
+    }
+    if (status === 401 || status === 403) {
+        countAccountFailure(account, 'auth', status, detail);
+        // claude.ai answers 401 for a cookie jar that was rotated out by another login
+        // and 403 for a Cloudflare challenge; neither recovers by waiting.
+        account.invalid = true;
+        account.cooldownUntil = Math.max(account.cooldownUntil || 0, Date.now() + Math.max(DEFAULT_ACCOUNT_COOLDOWN_MS, 60 * 60 * 1000));
+        account.cooldownReason = 'auth_expired';
+        console.log(`[account:${account.id}] Claude rejected the cookie (HTTP ${status}) — marked needs_auth until it is re-captured.${detail ? ` ${clipText(detail, 120)}` : ''}`);
+        broadcastSse('accounts', { reason: 'needs_auth', account: account.id });
+        return;
+    }
+    countAccountFailure(account, 'upstream', status, detail || `HTTP ${status}`);
+}
+
+// One Claude transport error becomes the error shape the failover loop already
+// understands (accountId + failover flags), so hopping between logins needs no
+// Claude-specific code at the call site.
+function claudeRequestError(error, account, agentTag) {
+    if (!(error instanceof claudeWeb.ClaudeWebError)) return error;
+    const status = error.status || 502;
+    console.log(`${agentTag} Claude ${error.type} (HTTP ${status}): ${clipText(error.message, 160)}`);
+    if (status === 429) {
+        return accountRateLimitError(account, error.message, error.retryAfter ? String(error.retryAfter) : null, 'claude completion', 429);
+    }
+    markClaudeFailure(account, status, error.message, error.retryAfter);
+    const err = createUpstreamHttpError(status, error.message, error.retryAfter ? String(error.retryAfter) : null);
+    err.accountId = account?.id || null;
+    if (status === 401 || status === 403) {
+        err.accountAuthFailed = true;
+        err.accountFailover = true;
+    } else if (status >= 500) {
+        err.accountServerFailed = true;
+        err.accountFailover = true;
+    }
+    return err;
+}
+
+async function askClaudeStream({ prompt, agentId, model, freshSessionPrompt, lockHolder = null, excludedAccountIds = null }) {
+    const session = getOrCreateAgentSession(agentId);
+    const hadRemoteSession = Boolean(session.id);
+    let account = null;
+    for (let attempt = 0; ; attempt++) {
+        account = selectAccountForSession(session, lockHolder, excludedAccountIds, claudeWeb.PROVIDER);
+        const waited = await acquireAccountChatLock(account, lockHolder);
+        if (!waited || (accountCanServe(account) && session.accountId === account.id)) break;
+        releaseAccountChatLock(lockHolder);
+        if (attempt >= accounts.length) {
+            throw concurrentChatBlocked(
+                `Agent session ${agentId} kept moving between Claude logins while this request waited for one. Retry shortly.`,
+                { retryAfter: 1 },
+            );
+        }
+    }
+    account.lastUsedAt = Date.now();
+    const agentTag = `[${agentId}/acct:${account.id}]`;
+    const rollover = prepareSessionForPrompt(session);
+    const accountRotationReset = hadRemoteSession && !session.id;
+    const promptUsed = (accountRotationReset || rollover) ? freshSessionPrompt : prompt;
+    if (accountRotationReset) console.log(`${agentTag} Account rotation reset the previous Claude conversation; using recovery prompt.`);
+    if (rollover) console.log(`${agentTag} Session ${rollover.failedSessionId} reset before upstream call (${rollover.reason}).`);
+
+    let createdConversationId = null;
+    try {
+        // The organisation uuid is stable per login: discovered once, then kept.
+        const org = account.claudeOrg || await claudeWeb.resolveOrganization(account.config, { signal: AbortSignal.timeout(CLAUDE_META_TIMEOUT_MS) });
+        account.claudeOrg = org;
+        if (!session.id) {
+            session.id = await claudeWeb.createConversation(account.config, org, { signal: AbortSignal.timeout(CLAUDE_META_TIMEOUT_MS) });
+            createdConversationId = session.id;
+            session.accountId = account.id;
+            session.parentMessageId = null;
+            session.createdAt = Date.now();
+            session.messageCount = 0;
+            console.log(`${agentTag} Created new Claude conversation: ${session.id}`);
+        } else {
+            console.log(`${agentTag} Reusing Claude conversation: ${session.id} (parent: ${session.parentMessageId || 'root'})`);
+        }
+        const { resp, stream } = await claudeWeb.completeStream({
+            config: account.config,
+            org,
+            conversationId: session.id,
+            parentMessageUuid: session.parentMessageId || claudeWeb.ROOT_MESSAGE_UUID,
+            prompt: promptUsed,
+            model,
+        });
+        // Same shape as the DeepSeek path returns: the reader only sees `.body`.
+        return { resp: { ok: true, status: resp.status, body: stream }, agentId, account, promptUsed, freshSessionReset: accountRotationReset || Boolean(rollover) };
+    } catch (error) {
+        // A conversation created here holds no message: drop it so the next turn
+        // resends the whole context instead of continuing an empty chat.
+        if (createdConversationId && session.id === createdConversationId) resetRemoteSession(session);
+        throw claudeRequestError(error, account, agentTag);
+    }
+}
+
+async function askDeepSeekStream(prompt, agentId, model = DEFAULT_MODEL_ID, freshSessionPrompt = prompt, lockHolder = null, imageContext = null, webFlags = null, excludedAccountIds = null, provider = 'deepseek') {
+    if (provider === claudeWeb.PROVIDER) {
+        return askClaudeStream({ prompt, agentId, model, freshSessionPrompt, lockHolder, excludedAccountIds });
+    }
     const modelCfg = resolveModelConfig(model);
     const thinking_enabled = webFlags?.thinking_enabled ?? modelCfg.thinking_enabled;
     const search_enabled = webFlags?.search_enabled ?? modelCfg.search_enabled;
@@ -2017,7 +2255,7 @@ async function askDeepSeekStream(prompt, agentId, model = DEFAULT_MODEL_ID, fres
     const hadRemoteSession = Boolean(session.id);
     let account = null;
     for (let attempt = 0; ; attempt++) {
-        account = selectAccountForSession(session, lockHolder, excludedAccountIds);
+        account = selectAccountForSession(session, lockHolder, excludedAccountIds, provider);
         const waited = await acquireAccountChatLock(account, lockHolder);
         // While this request waited, the lock holder may have rate-limited this login
         // or moved the agent session to another one: choose again before using it.
@@ -3828,7 +4066,9 @@ function summaryCacheKey(text) {
 // make a live agent wait, and two chats on one login get that login banned.
 function pickSummaryAccount(excludeIds = new Set()) {
     const now = Date.now();
-    const free = (account) => account && accountCanServe(account, now) && !accountLocks.has(account.id);
+    // Summaries are DeepSeek prompts; a Claude login cannot serve one.
+    const free = (account) => account && (account.provider || 'deepseek') === 'deepseek'
+        && accountCanServe(account, now) && !accountLocks.has(account.id);
     if (SUMMARY_ACCOUNT) {
         return free(accounts.find(a => a.id === SUMMARY_ACCOUNT)) ? accounts.find(a => a.id === SUMMARY_ACCOUNT) : null;
     }
@@ -4131,7 +4371,28 @@ const REFUSAL_ANSWER = new RegExp(
 function isRefusalAnswer(text) {
     const value = String(text || '').trim();
     if (!value) return false;
-    return REFUSAL_ANSWER.test(value.slice(0, 900));
+    // An artifact that quotes a refusal further down is still an artifact, so a reply
+    // carrying a fenced block is judged on its opening alone. A reply with no code is
+    // judged whole, because a refusal can spend two kilobytes justifying itself before
+    // it finally declines, and that sentence is the one worth catching.
+    if (REFUSAL_ANSWER.test(value.slice(0, 900))) return true;
+    if (/```/.test(value)) return false;
+    return REFUSAL_ANSWER.test(value.slice(0, 4000));
+}
+
+// A delivery that opens with a note about the request instead of the artifact. The
+// operator asked for the thing; a paragraph about scope, consent or risk placed in
+// front of it is a partial answer with the same cause as a refusal, so it gets the same
+// repair. Only the opening before the first fence is read, so an artifact may discuss
+// caveats inside itself.
+const CAVEAT_LEAD = /(?:scope note|note before the artifact|before the artifact|a (?:quick )?caveat|one caveat|before we (?:go|begin|start)|before i (?:start|begin)|disclaimer\s*[:—-])/i;
+
+function isCaveatLedAnswer(text) {
+    const value = String(text || '');
+    if (!value.trim()) return false;
+    const fence = value.indexOf('```');
+    const limit = fence === -1 ? 600 : Math.min(fence, 600);
+    return CAVEAT_LEAD.test(value.slice(0, limit));
 }
 
 // What goes back when a reply refused. It does not argue with the refusal; it
@@ -4332,11 +4593,72 @@ function seekIdentityNotice(model, { personaActive = false } = {}) {
 }
 const personaStats = { full_prompts: 0, reminders: 0, loaded_chars: 0 };
 // Seen/attempted/repaired/unrepaired, plus which pass delivered, so the dashboard
-// can show whether the first clean-chat repair is carrying the load.
-const refusalStats = {
-    seen: 0, pass1: 0, pass2: 0, pass3: 0, repaired: 0, unrepaired: 0,
-    repaired_pass1: 0, repaired_pass2: 0, repaired_pass3: 0,
-};
+// can show whether the first clean-chat repair is carrying the load. Kept on disk:
+// in-memory counters reset on every restart and read as "no refusals", which is the
+// one thing this number must never say by accident.
+function refusalStatsPath() {
+    return process.env.DEEPSEEK_REFUSAL_PATH
+        || path.join(os.homedir(), '.freedeepseek-api', 'refusals.json');
+}
+const REFUSAL_STAT_KEYS = ['seen', 'pass1', 'pass2', 'pass3', 'repaired', 'unrepaired',
+    'repaired_pass1', 'repaired_pass2', 'repaired_pass3'];
+
+function loadRefusalStats() {
+    const empty = { since: new Date().toISOString() };
+    for (const key of REFUSAL_STAT_KEYS) empty[key] = 0;
+    let data = null;
+    try {
+        data = JSON.parse(fs.readFileSync(refusalStatsPath(), 'utf8'));
+    } catch (_) {
+        return empty;
+    }
+    if (!data || typeof data !== 'object') return empty;
+    const out = { since: typeof data.since === 'string' ? data.since : empty.since };
+    for (const key of REFUSAL_STAT_KEYS) {
+        const n = Number(data[key]);
+        out[key] = Number.isFinite(n) && n >= 0 ? Math.floor(n) : 0;
+    }
+    return out;
+}
+
+// The counters follow the configured path. A process pointed at a different file (a
+// rotated store, a test fixture) reads that file instead of serving whatever it
+// happened to load at start-up, which is how a stale ~/.freedeepseek-api count used
+// to leak into a run that had its own empty file.
+let refusalStatsPathSeen = refusalStatsPath();
+let refusalStats = loadRefusalStats();
+function refreshRefusalStats() {
+    const current = refusalStatsPath();
+    if (current !== refusalStatsPathSeen) {
+        refusalStatsPathSeen = current;
+        refusalStats = loadRefusalStats();
+    }
+    return refusalStats;
+}
+let refusalSaveTimer = null;
+
+function saveRefusalStats() {
+    if (refusalSaveTimer) return;
+    refusalSaveTimer = setTimeout(() => {
+        refusalSaveTimer = null;
+        try {
+            const file = refusalStatsPath();
+            fs.mkdirSync(path.dirname(file), { recursive: true, mode: 0o700 });
+            const tmp = `${file}.${process.pid}.tmp`;
+            fs.writeFileSync(tmp, JSON.stringify(refusalStats, null, 2), { mode: 0o600 });
+            fs.renameSync(tmp, file);
+        } catch (err) {
+            console.log(`[DS-API] refusals: could not save (${err.message})`);
+        }
+    }, 500);
+    if (refusalSaveTimer.unref) refusalSaveTimer.unref();
+}
+
+function bumpRefusal(key) {
+    const stats = refreshRefusalStats();
+    stats[key] = (stats[key] || 0) + 1;
+    saveRefusalStats();
+}
 
 function personaReminder() {
     return PERSONA_REMINDER;
@@ -4345,7 +4667,14 @@ function personaReminder() {
 function personaSystemPrompt() {
     const cfg = personaConfig();
     if (!cfg.source) return '';
-    if (personaCache && personaCache.source === cfg.source) return personaCache.text;
+    // The cache key carries the file's mtime, so a saved standard is picked up on the
+    // next request instead of needing a restart of the gateway.
+    let stamp = 0;
+    if (cfg.file) {
+        try { stamp = fs.statSync(cfg.file).mtimeMs; } catch (_) { stamp = 0; }
+    }
+    const key = `${cfg.source}#${stamp}`;
+    if (personaCache && personaCache.key === key) return personaCache.text;
     let text = cfg.inline;
     if (!text.trim() && cfg.file) {
         try {
@@ -4361,7 +4690,7 @@ function personaSystemPrompt() {
         console.log(`[DS-API] persona: ${text.length} chars trimmed to ${cfg.max}`);
         text = truncatePromptMiddle(text, cfg.max, 0.7);
     }
-    personaCache = { source: cfg.source, text };
+    personaCache = { source: cfg.source, key, text };
     if (text) console.log(`[DS-API] persona: ${text.length} chars from ${cfg.source} (${cfg.mode})`);
     return text;
 }
@@ -4504,6 +4833,8 @@ function adminAccountView(account, now = Date.now()) {
         status: adminAccountStatus(account, now),
         enabled: isAccountEnabled(account),
         disabled_by: config.enabled === false ? 'file' : (account.adminDisabled === true ? 'admin' : null),
+        // Which upstream this login belongs to; the dashboard groups and labels by it.
+        provider: account.provider || 'deepseek',
         credentials: {
             token: Boolean(config.token),
             cookie_count: String(config.cookie || '').split(';').map(v => v.trim()).filter(Boolean).length,
@@ -4771,14 +5102,65 @@ function writeAuthFileAtomic(file, data) {
         throw new AdminHttpError(500, 'auth_file_write_failed', `Could not write auth file ${path.basename(file)}: ${e.code || 'error'}`);
     }
 }
+// A Claude login is a cookie jar rather than a token, so it has its own import path:
+// verify it against claude.ai (which also hands back the organisation uuid) and then
+// store the cookie. Sharing the DeepSeek writer here would store a file the loader
+// recognises but the transport cannot use.
+async function adminImportClaudeAccount(name, input, dir) {
+    const config = claudeWeb.normalizeConfig({ provider: claudeWeb.PROVIDER, ...input });
+    if (!claudeWeb.hasCredentials(config)) {
+        throw new AdminHttpError(422, 'invalid_auth', 'A Claude login needs the claude.ai cookie (sessionKey=…), including the Cloudflare cookies the browser holds.');
+    }
+    const duplicate = accounts.find(a => a.provider === claudeWeb.PROVIDER && a.config?.cookie === config.cookie);
+    if (duplicate) {
+        throw new AdminHttpError(409, 'duplicate_account', `This Claude login is already loaded as ${duplicate.id}`, { account: duplicate.id });
+    }
+    let probe = { kind: 'skipped', ok: false, status: 0 };
+    if (IMPORT_VERIFY) {
+        try {
+            config.org = await claudeWeb.resolveOrganization(config, { signal: AbortSignal.timeout(15000) });
+            probe = { kind: 'ok', ok: true, status: 200 };
+        } catch (error) {
+            const status = error.status || 502;
+            probe = { kind: 'auth', ok: false, status, detail: error.message };
+            throw new AdminHttpError(status === 401 || status === 403 ? 401 : 502, 'auth_verify_failed',
+                `claude.ai rejected this cookie: ${error.message}`, { probe });
+        }
+    }
+    const wanted = name.trim().toLowerCase();
+    const existing = accounts.find(a => a.provider === claudeWeb.PROVIDER && String(a.config?.name || a.label || a.id || '').trim().toLowerCase() === wanted);
+    const target = existing?.file
+        ? path.resolve(existing.file)
+        : path.join(dir, `${accountSlug(name, candidate => accounts.some(a => a.id === candidate) || fs.existsSync(path.join(dir, `${candidate}.json`)))}.json`);
+    try {
+        fs.mkdirSync(dir, { recursive: true, mode: 0o700 });
+        writeAuthFileAtomic(target, { name, ...config });
+    } catch (e) {
+        throw new AdminHttpError(500, 'auth_file_write_failed', `Could not write auth file ${path.basename(target)}: ${e.code || 'error'}`);
+    }
+    console.log(`[admin] imported Claude login ${name} -> ${path.basename(target)} (probe: ${probe.kind})`);
+    const result = adminReloadAccounts();
+    const account = accounts.find(a => a.file && path.resolve(a.file) === target);
+    if (!result.ok || !account) {
+        throw new AdminHttpError(500, 'import_not_loaded', `Wrote ${path.basename(target)} but the reload did not load it.`, { errors: result.errors || [] });
+    }
+    account.lastProbe = { ...probe, at: Date.now() };
+    account.claudeOrg = config.org || null;
+    return { account, result, replaced: Boolean(existing) };
+}
 async function adminImportAccount(body) {
     const name = validAccountName(body.name);
     if (!body.auth || typeof body.auth !== 'object' || Array.isArray(body.auth)) {
-        throw new AdminHttpError(422, 'invalid_request', 'auth must be a JSON object with token and cookie (the deepseek-auth.json shape)');
+        throw new AdminHttpError(422, 'invalid_request', 'auth must be a JSON object: a DeepSeek session (token + cookie) or a Claude cookie jar (cookie, provider "claude")');
     }
     const dir = managedAccountsDir();
     if (!dir) {
         throw new AdminHttpError(409, 'import_unsupported', 'Auth files come from an explicit DEEPSEEK_AUTH_PATH list. Set DEEPSEEK_AUTH_DIR (or unset DEEPSEEK_AUTH_PATH) to import accounts from the dashboard.');
+    }
+    // A declared provider wins; otherwise a cookie jar with no token is Claude's shape.
+    if (String(body.provider || '').toLowerCase() === claudeWeb.PROVIDER
+        || (!body.auth.token && claudeWeb.hasCredentials(body.auth))) {
+        return adminImportClaudeAccount(name, body.auth, dir);
     }
     // Lazy: the container image ships without scripts/; only this route needs it.
     const { normalizeAuth, validateAuth } = require('./scripts/auth_import');
@@ -5437,7 +5819,7 @@ async function handleAdminRequest(req, res, url) {
             }
             if (parts[2] === 'probe-all') {
                 const probed = await Promise.all(accounts.map(async (account) => {
-                    const probe = await authRefresh.probeAccountToken(account);
+                    const probe = await probeAccount(account);
                     account.lastProbe = { ...probe, at: Date.now() };
                     return { id: account.id, name: account.config?.name || account.id, ...probe };
                 }));
@@ -5509,7 +5891,7 @@ async function handleAdminRequest(req, res, url) {
         }
         const action = parts[3];
         if (action === 'probe') {
-            const probe = await authRefresh.probeAccountToken(account);
+            const probe = await probeAccount(account);
             account.lastProbe = { ...probe, at: Date.now() };
             if (probe.ok) {
                 account.invalid = false;
@@ -5522,6 +5904,9 @@ async function handleAdminRequest(req, res, url) {
             return;
         }
         if (action === 'refresh') {
+            if ((account.provider || 'deepseek') !== 'deepseek') {
+                throw new AdminHttpError(409, 'refresh_unsupported', 'A Claude login is renewed by capturing the browser cookies again (npm run claude:auth), not by refreshing a token.');
+            }
             const result = await authRefresh.refreshAccount(account);
             if (result.ok) {
                 account.cooldownUntil = 0;
@@ -5759,7 +6144,7 @@ const server = http.createServer(async (req, res) => {
             },
             // What the repair loop has done since boot: how many replies opened as a
             // refusal, how many of those a second or third pass turned into the artifact.
-            refusals: { ...refusalStats },
+            refusals: { ...refreshRefusalStats() },
         });
         res.writeHead(200, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify(health));
@@ -5777,16 +6162,30 @@ const server = http.createServer(async (req, res) => {
     }
 
     // Models: OpenAI-compatible list exposes only aliases verified to work through this proxy.
+    // Claude entries appear once a Claude login is loaded, so an agent's model picker shows
+    // what this gateway can actually serve right now.
     if (req.method === 'GET' && url.pathname === '/v1/models') {
+        const data = SUPPORTED_MODEL_IDS.map(id => ({ id, object: 'model', created: 1700000000, owned_by: 'deepseek-web', real_model: MODEL_CONFIGS[id].real_model, capabilities: MODEL_CONFIGS[id].capabilities }));
+        if (hasClaudeAccount()) {
+            for (const [id, cfg] of Object.entries(CLAUDE_MODEL_CONFIGS)) {
+                data.push({ id, object: 'model', created: 1700000000, owned_by: 'claude-web', real_model: cfg.real_model, capabilities: cfg.capabilities });
+            }
+        }
         res.writeHead(200, { 'Content-Type': 'application/json' });
-        res.end(JSON.stringify({ object: 'list', data: SUPPORTED_MODEL_IDS.map(id => ({ id, object: 'model', created: 1700000000, owned_by: 'deepseek-web', real_model: MODEL_CONFIGS[id].real_model, capabilities: MODEL_CONFIGS[id].capabilities })) }));
+        res.end(JSON.stringify({ object: 'list', data }));
         return;
     }
 
     // Full mapping, including Web models observed but not currently usable through the direct API.
     if (req.method === 'GET' && (url.pathname === '/v1/model-capabilities' || url.pathname === '/api/model-capabilities')) {
+        const data = { ...ALL_MODEL_CAPABILITIES };
+        if (hasClaudeAccount()) {
+            for (const [id, cfg] of Object.entries(CLAUDE_MODEL_CONFIGS)) {
+                data[id] = { id, real_model: cfg.real_model, model_type: cfg.model_type, provider: cfg.provider, thinking_enabled: cfg.thinking_enabled, search_enabled: cfg.search_enabled, capabilities: cfg.capabilities, supported: cfg.supported, unavailable_reason: null };
+            }
+        }
         res.writeHead(200, { 'Content-Type': 'application/json' });
-        res.end(JSON.stringify({ object: 'model_capabilities', data: ALL_MODEL_CAPABILITIES }));
+        res.end(JSON.stringify({ object: 'model_capabilities', data }));
         return;
     }
 
@@ -5942,8 +6341,14 @@ const server = http.createServer(async (req, res) => {
             const imageContext = { inputs: extractImageInputs(messages), refFileIds: [] };
             const stream = params.stream === true;
             logRow.stream = stream;
-            const requestedModel = canonicalizeModelId(params.model || DEFAULT_MODEL_ID);
-            const webFlags = resolveRequestWebFlags(requestedModel, rawParams);
+            // Two transports, one endpoint: the model decides which upstream serves it.
+            const provider = resolveProvider(params.model || DEFAULT_MODEL_ID);
+            const requestedModel = provider === claudeWeb.PROVIDER
+                ? claudeWeb.resolveModel(params.model || claudeWeb.DEFAULT_MODEL).gateway
+                : canonicalizeModelId(params.model || DEFAULT_MODEL_ID);
+            const webFlags = provider === claudeWeb.PROVIDER
+                ? { thinking_enabled: resolveModelConfig(requestedModel, provider).thinking_enabled, search_enabled: false }
+                : resolveRequestWebFlags(requestedModel, rawParams);
             const webAccess = prepareAgentWebAccess(params.tools, webFlags.search_enabled);
             const effectiveTools = effectiveToolsForRequest(rawParams, webAccess);
             const tools = effectiveTools;
@@ -5959,6 +6364,8 @@ const server = http.createServer(async (req, res) => {
                 messages,
             });
             const agentTag = `[${agentId}]`;
+            // Error text should name the upstream that actually failed.
+            const upstreamLabel = provider === claudeWeb.PROVIDER ? 'Claude' : 'DeepSeek';
             activeAgentId = agentId;
             lockHolder.agentId = agentId;
             // Optional: serve this request with one named login (the dashboard account switcher).
@@ -5968,13 +6375,13 @@ const server = http.createServer(async (req, res) => {
             if (webAccess.nativeSearchNotice) {
                 console.log(`${agentTag} Native DeepSeek Search on${webAccess.strippedNames.length ? `; stripped harness tools: ${webAccess.strippedNames.join(', ')}` : ''}`);
             }
-            if (!isKnownModel(requestedModel)) {
+            if (provider === 'deepseek' && !isKnownModel(requestedModel)) {
                 logError(400, 'invalid_model', `Unknown model: ${requestedModel}`);
                 res.writeHead(400, { 'Content-Type': 'application/json' });
                 res.end(JSON.stringify({ error: { message: `Unknown model: ${requestedModel}`, type: 'invalid_model', supported_models: SUPPORTED_MODEL_IDS, model_capabilities_url: '/v1/model-capabilities' } }));
                 return;
             }
-            if (!isSupportedModel(requestedModel)) {
+            if (provider === 'deepseek' && !isSupportedModel(requestedModel)) {
                 logError(400, 'unsupported_model', `${requestedModel} is not currently supported through this DeepSeek Web API path`);
                 const cfg = resolveModelConfig(requestedModel);
                 res.writeHead(400, { 'Content-Type': 'application/json' });
@@ -6301,7 +6708,7 @@ const server = http.createServer(async (req, res) => {
                     const hopStarted = Date.now();
                     let failedAccountId = null;
                     try {
-                        const call = await askDeepSeekStream(hop === 0 ? promptText : recoveryPrompt, agentId, requestedModel, recoveryPrompt, lockHolder, imageContext, webFlags, failedAccountIds);
+                        const call = await askDeepSeekStream(hop === 0 ? promptText : recoveryPrompt, agentId, requestedModel, recoveryPrompt, lockHolder, imageContext, webFlags, failedAccountIds, provider);
                         const result = await readDeepSeekResponse(call.resp.body, call.account);
                         if (!result.rateLimited) return { call, result, elapsedMs: Date.now() - hopStarted };
                         failedAccountId = call.account.id;
@@ -6319,7 +6726,8 @@ const server = http.createServer(async (req, res) => {
                         if (authFailed && failedAccountId && !refreshedOnce.has(failedAccountId)) {
                             refreshedOnce.add(failedAccountId);
                             const target = accounts.find(a => a.id === failedAccountId);
-                            if (target && target.file && !target.merged) {
+                            // Only a DeepSeek login has a token this refresher can renew.
+                            if (target && (target.provider || 'deepseek') === 'deepseek' && target.file && !target.merged) {
                                 console.log(`${agentTag} account ${failedAccountId} rejected its token; attempting a refresh.`);
                                 let refreshed = null;
                                 try {
@@ -6501,10 +6909,10 @@ const server = http.createServer(async (req, res) => {
                 const errorType = failureClass.type;
                 const errorMessage = modelError?.content
                     || (timedOut
-                        ? 'DeepSeek request deadline reached while recovering an empty response'
+                        ? `${upstreamLabel} request deadline reached while recovering an empty response`
                         : (overflow
-                            ? 'DeepSeek rejected the prompt as too long after compaction retries'
-                            : `DeepSeek returned empty content after ${retryAttempt} retr${retryAttempt === 1 ? 'y' : 'ies'}`));
+                            ? `${upstreamLabel} rejected the prompt as too long after compaction retries`
+                            : `${upstreamLabel} returned empty content after ${retryAttempt} retr${retryAttempt === 1 ? 'y' : 'ies'}`));
                 console.log(`${agentTag} ${errorType} after ${retryAttempt} retr${retryAttempt === 1 ? 'y' : 'ies'}. Giving up.`);
                 res.writeHead(failureClass.status, { 'Content-Type': 'application/json' });
                 res.end(JSON.stringify({
@@ -6520,7 +6928,7 @@ const server = http.createServer(async (req, res) => {
                         upstream_prompt_chars: fullPrompt.length,
                         prompt_compacted: promptCompacted,
                         model: requestedModel,
-                        real_model: resolveModelConfig(requestedModel).real_model,
+                        real_model: resolveModelConfig(requestedModel, provider).real_model,
                     }
                 }));
                 return;
@@ -6559,7 +6967,9 @@ const server = http.createServer(async (req, res) => {
                         continuationRecoveryPrompt,
                         lockHolder,
                         imageContext,
-                        webFlags
+                        webFlags,
+                        null,
+                        provider
                     );
                 } catch (e) {
                     if (!isRateLimitedPoolOrAccount(e)) throw e;
@@ -6678,7 +7088,7 @@ const server = http.createServer(async (req, res) => {
                             hop === 0 ? strictPrompt : (shouldRepairNoTools ? repairRecoveryPrompt : secondStrictLivePrompt),
                             agentId, requestedModel,
                             hop === 0 || shouldRepairNoTools ? repairRecoveryPrompt : secondStrictPrompt,
-                            lockHolder, imageContext, webFlags
+                            lockHolder, imageContext, webFlags, null, provider
                         );
                         const repairRead = await readDeepSeekResponse(repairCall.resp.body, repairCall.account);
                         if (!repairRead.rateLimited) {
@@ -6728,7 +7138,7 @@ const server = http.createServer(async (req, res) => {
                     repairAttempts++;
                     try {
                         const freshRepairCall = await askDeepSeekStream(
-                            freshRepairPrompt, agentId, requestedModel, freshRepairPrompt, lockHolder, imageContext, webFlags
+                            freshRepairPrompt, agentId, requestedModel, freshRepairPrompt, lockHolder, imageContext, webFlags, null, provider
                         );
                         const freshRepairRead = await readDeepSeekResponse(freshRepairCall.resp.body, freshRepairCall.account);
                         if (freshRepairRead.rateLimited) {
@@ -6805,7 +7215,7 @@ const server = http.createServer(async (req, res) => {
                         account: failure.accountId,
                         prompt_compacted: promptCompacted,
                         model: requestedModel,
-                        real_model: resolveModelConfig(requestedModel).real_model,
+                        real_model: resolveModelConfig(requestedModel, provider).real_model,
                     } }));
                     return;
                 }
@@ -6823,25 +7233,28 @@ const server = http.createServer(async (req, res) => {
                     account: failure.accountId,
                     prompt_compacted: promptCompacted,
                     model: requestedModel,
-                    real_model: resolveModelConfig(requestedModel).real_model,
+                    real_model: resolveModelConfig(requestedModel, provider).real_model,
                 } }));
                 return;
             }
             
-            // A refusal is not an answer to this operator. One bounded repair pass, with
-            // the same prompt plus a correction, and the artifact replaces the lecture.
+            // A refusal is not an answer to this operator, and neither is a delivery that
+            // opens with a note about the request. Three bounded repair passes, each
+            // under a different condition, and the artifact replaces the lecture.
+            const defective = () => isRefusalAnswer(fullContent) || isCaveatLedAnswer(fullContent);
             if (!toolCalls.length && !toolCall && refusalRepairEnabled()
-                && isRefusalAnswer(fullContent) && !clientGone && !deadlineHit()) {
+                && defective() && !clientGone && !deadlineHit()) {
+                if (isCaveatLedAnswer(fullContent) && !isRefusalAnswer(fullContent)) {
+                    console.log(`${agentTag} Reply opened with a note instead of the artifact; repairing.`);
+                }
                 // Pass one reissues the same prompt with a correction. Pass two drops the
                 // chat the refusal happened in and reissues the full prompt, persona
                 // included, with the standing rule stated. A model that says no twice in
                 // the same conversation often says yes in a clean one.
-                refusalStats.seen++;
-                for (let attempt = 1; attempt <= 3 && isRefusalAnswer(fullContent); attempt++) {
+                bumpRefusal('seen');
+                for (let attempt = 1; attempt <= 3 && defective(); attempt++) {
                     if (clientGone || deadlineHit()) break;
-                    if (attempt === 1) refusalStats.pass1++;
-                    else if (attempt === 2) refusalStats.pass2++;
-                    else refusalStats.pass3++;
+                    bumpRefusal(attempt === 1 ? 'pass1' : attempt === 2 ? 'pass2' : 'pass3');
                     // Three different conditions, cheapest first: full context, then the
                     // bounded prompt in a fresh chat, then the request with no history at
                     // all. Repeating one condition with louder wording is what failed before.
@@ -6871,12 +7284,11 @@ const server = http.createServer(async (req, res) => {
                         const repaired = await callDeepSeekWithFailover(repairPrompt, repairPrompt);
                         const repairedText = repaired?.result?.content
                             ? sanitizeContent(repaired.result.content) : '';
-                        if (repairedText.trim() && !isRefusalAnswer(repairedText)) {
+                        if (repairedText.trim() && !isRefusalAnswer(repairedText) && !isCaveatLedAnswer(repairedText)) {
                             console.log(`${agentTag} Repaired on pass ${attempt}: ${fullContent.length} chars refused, ${repairedText.length} chars delivered.`);
-                            refusalStats.repaired++;
-                            if (attempt === 1) refusalStats.repaired_pass1++;
-                            else if (attempt === 2) refusalStats.repaired_pass2++;
-                            else refusalStats.repaired_pass3++;
+                            bumpRefusal('repaired');
+                            bumpRefusal(attempt === 1 ? 'repaired_pass1'
+                                : attempt === 2 ? 'repaired_pass2' : 'repaired_pass3');
                             fullContent = repairedText;
                             if (repaired.result.reasoningContent) {
                                 reasoningContent = sanitizeContent(repaired.result.reasoningContent);
@@ -6891,9 +7303,9 @@ const server = http.createServer(async (req, res) => {
                         console.log(`${agentTag} Refusal repair pass ${attempt} could not run: ${repairError.message}`);
                     }
                 }
-                if (isRefusalAnswer(fullContent)) {
-                    console.log(`${agentTag} All three repair passes refused; returning the reply with a refusal marker on the response.`);
-                    refusalStats.unrepaired++;
+                if (defective()) {
+                    console.log(`${agentTag} All three repair passes returned a defect; marking the response.`);
+                    bumpRefusal('unrepaired');
                     refusalUnrepaired = true;
                 }
             }
@@ -7184,7 +7596,13 @@ module.exports = {
         buildBaseHeaders,
         isRateLimitSignal,
         isRefusalAnswer,
+        isCaveatLedAnswer,
         refusalRepair: REFUSAL_REPAIR,
+        loadRefusalStats,
+        bumpRefusal,
+        saveRefusalStats,
+        refusalStats: () => ({ ...refreshRefusalStats() }),
+        refusalStatsPath: refusalStatsPath(),
         refusalRepairHard: REFUSAL_REPAIR_HARD,
         refusalRepairFinal: REFUSAL_REPAIR_FINAL,
         withAssistantPrefill,
@@ -7328,8 +7746,15 @@ module.exports = {
         DEFAULT_MODEL_ID,
         canonicalizeModelId,
         MODEL_CONFIGS,
+        CLAUDE_MODEL_CONFIGS,
         SUPPORTED_MODEL_IDS,
         resolveModelConfig,
+        resolveProvider,
+        providerModelIds,
+        hasClaudeAccount,
+        accountHeaders,
+        claudeWeb,
+        ACCOUNTS_DIR,
         isKnownModel,
         isSupportedModel,
         setCorsResponseHeaders,

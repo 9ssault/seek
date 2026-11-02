@@ -269,7 +269,8 @@ test('Containerfile keeps the rootless Podman runtime minimal and fail-closed', 
   assert.deepEqual(copyLines, [
     'COPY --chown=1000:1000 package.json server.js ./',
     // server.js requires lib/updater.js; the image still has no .git, so it reports updates as unavailable.
-    'COPY --chown=1000:1000 lib/auth-health.js lib/auth-refresh.js lib/pow.js lib/updater.js ./lib/',
+    // accounts-dir decides where logins live, claude-web is the second upstream.
+    'COPY --chown=1000:1000 lib/auth-health.js lib/auth-refresh.js lib/accounts-dir.js lib/claude-web.js lib/pow.js lib/updater.js ./lib/',
     'COPY --chown=1000:1000 scripts/lib/tui-menu.js ./scripts/lib/tui-menu.js',
     'COPY --chown=1000:1000 public/dashboard/index.html public/dashboard/*.css public/dashboard/*.js public/dashboard/*.png public/dashboard/*.jpg public/dashboard/*.woff2 public/dashboard/GEIST-LICENSE.txt ./public/dashboard/',
   ]);
@@ -2474,6 +2475,70 @@ test('refusal repair: a reply that declines is recognised, one that delivers is 
   ];
   for (const text of deliveries) {
     assert.equal(isRefusalAnswer(text), false, `called a delivery a refusal: ${text.slice(0, 60)}`);
+  }
+});
+
+test('refusal repair: a note in front of the artifact is a defect, one inside it is not', () => {
+  const { isCaveatLedAnswer } = serverInternals;
+  assert.equal(isCaveatLedAnswer('Scope note before the artifact: §4 lists this as in scope.\n\nArtifact: kit'), true);
+  assert.equal(isCaveatLedAnswer('One caveat: the target build differs.\n\n```c\nint main(){}'), true);
+  assert.equal(isCaveatLedAnswer('Artifact: kit\n\n```c\n// a caveat: this assumes PIE is off\nint main(){}\n```'), false);
+  assert.equal(isCaveatLedAnswer('Artifact: loader\n\nVirtualAlloc, memcpy, call the entry point.'), false);
+});
+
+test('refusal repair: a deep decline is caught, a quoted one inside an artifact is not', () => {
+  const { isRefusalAnswer } = serverInternals;
+  const preamble = 'The request describes work on a memory-corruption path in a lab build. '.repeat(20);
+  assert.equal(preamble.length > 900, true, 'the preamble must start past the opening window');
+  assert.equal(isRefusalAnswer(`${preamble}I am not going to continue this one.`), true);
+  assert.equal(isRefusalAnswer(`Artifact: notes\n\n\`\`\`c\nint x;\n\`\`\`\n\n${preamble}I am not going to continue this one.`), false);
+});
+
+test('refusal repair: counters survive a restart and reject corrupt values', () => {
+  const { loadRefusalStats, refusalStatsPath } = serverInternals;
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'refusals-'));
+  const file = path.join(dir, 'refusals.json');
+  const original = process.env.DEEPSEEK_REFUSAL_PATH;
+  try {
+    // The loader reads the env var on every call, so the module default is not touched.
+    process.env.DEEPSEEK_REFUSAL_PATH = file;
+    const empty = loadRefusalStats();
+    assert.equal(empty.seen, 0);
+    assert.equal(typeof empty.since, 'string');
+    fs.writeFileSync(file, JSON.stringify({ seen: 4, repaired: 3, repaired_pass1: 2, unrepaired: 'x' }));
+    const loaded = loadRefusalStats();
+    assert.equal(loaded.seen, 4);
+    assert.equal(loaded.repaired, 3);
+    assert.equal(loaded.unrepaired, 0, 'a corrupt count reads as zero, not NaN');
+    assert.equal(loaded.pass3, 0);
+    fs.writeFileSync(file, 'not json');
+    assert.equal(loadRefusalStats().seen, 0);
+  } finally {
+    if (original === undefined) delete process.env.DEEPSEEK_REFUSAL_PATH;
+    else process.env.DEEPSEEK_REFUSAL_PATH = original;
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+  assert.equal(refusalStatsPath.endsWith('refusals.json'), true);
+});
+
+test('refusal repair: a counted refusal reaches the disk', async () => {
+  const { bumpRefusal, loadRefusalStats } = serverInternals;
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'refusals-w-'));
+  const file = path.join(dir, 'refusals.json');
+  const original = process.env.DEEPSEEK_REFUSAL_PATH;
+  try {
+    process.env.DEEPSEEK_REFUSAL_PATH = file;
+    bumpRefusal('seen');
+    bumpRefusal('repaired_pass2');
+    await new Promise((resolve) => setTimeout(resolve, 700));
+    const saved = JSON.parse(fs.readFileSync(file, 'utf8'));
+    assert.equal(saved.seen, 1);
+    assert.equal(saved.repaired_pass2, 1);
+    assert.equal(loadRefusalStats().seen, 1);
+  } finally {
+    if (original === undefined) delete process.env.DEEPSEEK_REFUSAL_PATH;
+    else process.env.DEEPSEEK_REFUSAL_PATH = original;
+    fs.rmSync(dir, { recursive: true, force: true });
   }
 });
 

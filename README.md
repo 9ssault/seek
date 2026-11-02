@@ -22,14 +22,20 @@ No dependencies to install: Node 22+ and its own standard library.
 
 ## Logins
 
-`accounts/*.json` (one file per login) or one merged `deepseek-auth.json` (`auth.example.json` shows the shape). To capture one from a browser you are already signed into:
+Logins live in `~/.seek/accounts` — one JSON file each, outside the checkout, so every clone reads the same pool and nothing credential-shaped can be committed. `SEEK_HOME` moves the store; `DEEPSEEK_AUTH_DIR` overrides it outright. An older in-tree `accounts/` is still read until you adopt it.
+
+Both providers are captured from a real browser session; neither asks for a password on disk.
 
 ```bash
-npm run deepseek:auth
+npm run auth -- --name work          # chat.deepseek.com: opens Chrome, waits, stores, reloads
+npm run claude:auth -- --name work   # claude.ai: same, cookie jar instead of a token
+npm run accounts:share               # adopt an existing checkout's accounts/ into the store
 npm run doctor
 ```
 
-`npm run waf:refresh` refreshes the WAF tokens in place, and `GET /health` lists every login, its role and its cooldown.
+Nothing to edit by hand: the capture writes mode `0600`, validates against the upstream first, and reloads a running gateway. `npm run claude:auth -- --cookie "sessionKey=…"` skips the browser for CI, and `--force` stores a cookie the upstream does not confirm yet.
+
+`npm run waf:refresh` refreshes the WAF tokens in place (DeepSeek only — a Claude cookie is renewed by capturing it again), and `GET /health` lists every login, its provider, its role and its cooldown.
 
 ## Point an agent at it
 
@@ -38,6 +44,16 @@ npm run setup:agents      # Claude Code, Codex, OpenCode, Hermes, OpenClaw
 ```
 
 Any OpenAI-compatible client works: base URL `http://127.0.0.1:9655/v1`, key `local` (or `PROXY_API_KEY`), model `deepseek-v4-flash`, with `-thinking` and `-nosearch` variants.
+
+A Claude login merges into the same pool — same endpoints, same dashboard, same one-conversation-per-agent rule. The model id picks the upstream:
+
+| ID | Upstream |
+|---|---|
+| `claude-sonnet-4-5`, `claude-opus-4-1`, `claude-haiku-4-5` | claude.ai, once a Claude login is loaded |
+| `claude/…`, `anthropic/…` | claude.ai, explicitly, even with no Claude login (the error then names the missing account) |
+| `deepseek-v4-flash*` | chat.deepseek.com |
+
+With no Claude login in the pool, `claude-sonnet-4-5` keeps resolving to DeepSeek exactly as before, so an existing Claude Code setup does not change on upgrade. `npm run setup:agents -- --model claude-sonnet-4-5` points an agent at Claude instead.
 
 ## Tools on `/`
 

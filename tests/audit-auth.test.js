@@ -17,7 +17,9 @@ test('audit auth-2: scripts/auth.js ignores a comma-separated DEEPSEEK_AUTH_PATH
   assert.equal(r.status, 0, r.stderr);
   const printed = r.stdout.trim();
   assert.ok(!printed.includes(','), `AUTH_PATH must not be the raw comma list, got: ${printed}`);
-  assert.equal(printed, path.join(ROOT, 'deepseek-auth.json'));
+  // A capture lands in the shared per-user store, not in the checkout (lib/accounts-dir.js).
+  const accountsDir = require('../lib/accounts-dir');
+  assert.equal(printed, path.join(accountsDir.resolveAccountsDir({ root: ROOT }), 'deepseek-auth.json'));
 });
 
 test('audit auth-3: validateAuth rejects a wasmUrl outside https deepseek.com', () => {

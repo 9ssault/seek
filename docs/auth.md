@@ -19,9 +19,9 @@ One login = one in-flight chat. For two agents or two OpenCode sessions at once,
 
 ```bash
 mkdir -p accounts
-npm run auth:import -- --input ~/Downloads/deepseek-auth.json --output ./accounts/worker-2.json
+npm run auth:import -- --input ~/Downloads/deepseek-auth.json --output ~/.seek/accounts/worker-2.json
 ```
 
-The proxy also loads `./accounts/*.json` next to the default `deepseek-auth.json`. Override with `DEEPSEEK_AUTH_DIR` or a comma list in `DEEPSEEK_AUTH_PATH`. You cannot pin a client to a specific login; the proxy picks a free one. A second chat on the same login waits instead of overlapping.
+The proxy loads `~/.seek/accounts/*.json` — a per-user store outside the checkout, so every clone and both providers see the same logins. An older in-tree `./accounts/` is still read until you adopt it (`npm run accounts:share`); after the store holds logins it wins. Override with `DEEPSEEK_AUTH_DIR` or a comma list in `DEEPSEEK_AUTH_PATH`. You cannot pin a client to a specific login; the proxy picks a free one. A second chat on the same login waits instead of overlapping.
 
 HTTP details: [`api.md`](api.md).

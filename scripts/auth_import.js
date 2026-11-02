@@ -11,13 +11,18 @@ const {
   printWordmark,
 } = require('./lib/tui-menu');
 
+const accountsDir = require('../lib/accounts-dir');
+
 const ROOT = path.resolve(__dirname, '..');
 const DEFAULT_WASM = 'https://fe-static.deepseek.com/chat/static/sha3_wasm_bg.7b9ca65ddd.wasm';
 // DEEPSEEK_AUTH_PATH may list several account files separated by ','; a login or
 // import then writes the default file instead of a file literally named "a.json,b.json".
+// Without one, the login lands in the shared per-user store (lib/accounts-dir.js), so
+// a new capture is never written into a checkout and every clone sees it.
 function resolveAuthOutPath(env = process.env) {
   const envAuthPath = env.DEEPSEEK_AUTH_PATH || '';
-  return envAuthPath && !envAuthPath.includes(',') ? envAuthPath : path.join(ROOT, 'deepseek-auth.json');
+  if (envAuthPath && !envAuthPath.includes(',')) return envAuthPath;
+  return path.join(accountsDir.resolveAccountsDir({ root: ROOT, env }), 'deepseek-auth.json');
 }
 const DEFAULT_OUT = resolveAuthOutPath();
 

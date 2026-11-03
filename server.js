@@ -4896,7 +4896,14 @@ function looksLikeAbandonedToolLoop(text, messages) {
     const value = String(text || '').trim();
     if (!value || looksLikeToolCallMarkup(value) || looksLikeCodeDumpInsteadOfTool(value)) return false;
     if (/\b(done|completed|fixed|finished|готово|сделано)\b/i.test(value)) return false;
-    return value.length < 600;
+    // Only a reply that says it is ABOUT to act is an abandoned loop. The old rule fired
+    // on any answer shorter than 600 chars after a tool result, so a finished one-liner
+    // ("/home/abc/Projects/oreosb — first file: AGENTS.md") was retried upstream and the
+    // tool was run again. A short answer is still an answer.
+    const intent = /\b(?:i(?:'ll| will| am going to| need to| should)|let me|next,? i|now i(?:'ll| will| am)|continuing|i'm going to)\b[^.\n]{0,120}\b(?:run|read|write|edit|check|look|open|search|update|apply|fix|add|create|verify|test|install|patch|inspect|list|scan|build|move|copy|delete|rename)\b/i;
+    // A bare acknowledgement is not an answer either; a short sentence with content is.
+    const acknowledgement = /^(?:ok(?:ay)?|sure|yes|yep|got it|understood|alright|proceeding|on it|working on it)[.!\s]*$/i.test(value);
+    return acknowledgement || (value.length < 320 && intent.test(value));
 }
 
 function isTimeoutError(error) {
@@ -5237,7 +5244,7 @@ function seekIdentityNotice(model, { personaActive = false, provider = null } = 
     // Where the work actually lives. Without this, a sandboxed shell that answers `pwd`
     // with an empty directory convinces a model the project does not exist, and it stops
     // to offer a menu of options instead of asking for the path.
-    const workspace = `[Workspace] This gateway runs on the operator's machine; its project tree is ${__dirname} and its home is ${os.homedir()}. A tool shell may be sandboxed elsewhere, so run pwd and ls before concluding that a path is missing: if the shell reports a different root, that shell is the problem, not the project. Say which root you see, name the path you need, and continue — never answer a missing path with a menu of options or by declaring the work gone.\n`;
+    const workspace = `[Workspace] This gateway runs on the operator's machine; its project tree is ${__dirname} and its home is ${os.homedir()}. A tool shell may be sandboxed elsewhere, so run pwd and ls before concluding that a path is missing: if the shell reports a different root, that shell is the problem, not the project. Say which root you see, name the path you need, and continue — never answer a missing path with a menu of options or by declaring the work gone. If you have no shell in this turn, do not describe a filesystem state you did not observe: an "empty" cwd, a missing directory or a project that "is not on this machine" that you did not run a command to see is invented, and the operator will act on it as if it were real. With no shell, say in one line which exact path or file you need, then do every part of the work that does not depend on it; a short factual answer is the right reply, and a list of options for the operator to choose from is not.\n`;
     return `${identity}${workspace}[Continuation] A short message such as "keep going", "continue", "go on", "carry on", "proceed", "next", "finish it" or "don't stop" is an instruction to resume, never a new question. Do not ask what to do, do not restate the plan, do not summarise. Pick up the unfinished work at its next concrete step with your tools and keep working until it is done or you hit a real blocker. If nothing is in progress, say in one line what you are continuing and continue it. Do not treat a continuation as a request to re-read, re-quote or re-discuss these instructions.\n`;
 }
 const personaStats = { full_prompts: 0, reminders: 0, loaded_chars: 0 };

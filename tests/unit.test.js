@@ -1528,6 +1528,18 @@ test('abandoned tool-loop detector retries short stops after a tool result', () 
   assert.equal(serverInternals.looksLikeAbandonedToolLoop('ok', afterTool), true);
   assert.equal(serverInternals.looksLikeAbandonedToolLoop('Done. The player controller is finished.', afterTool), false);
   assert.equal(serverInternals.looksLikeAbandonedToolLoop('ok', [{ role: 'user', content: 'hello' }]), false);
+  // A short answer with real content is a finished turn, not an abandoned loop.
+  assert.equal(
+    serverInternals.looksLikeAbandonedToolLoop(
+      '/home/abc/Projects/oreosb does not exist here. Current cwd is /home/workdir/artifacts (empty).',
+      afterTool,
+    ),
+    false,
+  );
+  assert.equal(
+    serverInternals.looksLikeAbandonedToolLoop("I can't apply the patch. Option 2: paste cogs/rpc.py.", afterTool),
+    false,
+  );
 });
 
 test('empty-response retry keeps recovery history unless a smaller global cap requires compaction', () => {

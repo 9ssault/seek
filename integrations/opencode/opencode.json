@@ -3,16 +3,35 @@
   "provider": {
     "freedeepseek": {
       "npm": "@ai-sdk/openai-compatible",
-      "name": "seek",
+      "name": "unseeked",
       "options": {
         "baseURL": "http://127.0.0.1:9655/v1",
         "apiKey": "local"
       },
       "models": {
-        "seek": {
-          "name": "seek \u2014 DeepSeek \u00b7 Grok \u00b7 Claude",
+        "unseeked": {
+          "name": "unseeked — DeepSeek · Grok · Claude",
           "attachment": true,
-          "reasoning": true,
+          "reasoning": false,
+          "tool_call": true,
+          "modalities": {
+            "input": [
+              "text",
+              "image"
+            ],
+            "output": [
+              "text"
+            ]
+          },
+          "limit": {
+            "context": 30000,
+            "output": 8192
+          }
+        },
+        "seek": {
+          "name": "unseeked (legacy id)",
+          "attachment": true,
+          "reasoning": false,
           "tool_call": true,
           "modalities": {
             "input": [
@@ -29,7 +48,7 @@
           }
         },
         "deepseek-v4-flash": {
-          "name": "seek Flash + web",
+          "name": "unseeked Flash + web",
           "attachment": true,
           "reasoning": false,
           "tool_call": true,
@@ -48,7 +67,7 @@
           }
         },
         "deepseek-v4-flash-thinking": {
-          "name": "seek Flash Thinking + web",
+          "name": "unseeked Flash Thinking + web",
           "attachment": true,
           "reasoning": true,
           "tool_call": true,
@@ -67,7 +86,7 @@
           }
         },
         "deepseek-v4-flash-nosearch": {
-          "name": "seek Flash",
+          "name": "unseeked Flash",
           "attachment": true,
           "reasoning": false,
           "tool_call": true,
@@ -86,7 +105,7 @@
           }
         },
         "deepseek-v4-flash-thinking-nosearch": {
-          "name": "seek Flash Thinking",
+          "name": "unseeked Flash Thinking",
           "attachment": true,
           "reasoning": true,
           "tool_call": true,
@@ -107,6 +126,9 @@
       }
     }
   },
+  "instructions": [
+    "/home/abc/FreeDeepseekAPI-EN/docs/agents/principal-adversarial-engineer.md"
+  ],
   "tools": {
     "websearch": false,
     "webfetch": false
@@ -115,6 +137,7 @@
     "websearch": "deny",
     "webfetch": "deny"
   },
+  "model": "freedeepseek/unseeked",
   "attachment": {
     "image": {
       "auto_resize": true,

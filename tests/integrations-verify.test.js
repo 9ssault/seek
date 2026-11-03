@@ -44,9 +44,9 @@ test('checkOpencodeConfig accepts the config setup writes', (t) => {
   const plan = opencodePlan(home);
   const cfg = JSON.parse(plan.files.find((f) => f.id === 'config').after);
   const verdict = V.checkOpencodeConfig(cfg, {
-    // `seek` is the merged id the proxy advertises first; the four DeepSeek variants stay
-    // available behind it, so a config that lists all five is served.
-    models: ['seek', 'deepseek-v4-flash', 'deepseek-v4-flash-thinking', 'deepseek-v4-flash-nosearch', 'deepseek-v4-flash-thinking-nosearch'],
+    // `unseeked` is the merged id the proxy advertises first; `seek` stays an alias and the
+    // four DeepSeek variants stay available behind it, so a config that lists them is served.
+    models: ['unseeked', 'seek', 'deepseek-v4-flash', 'deepseek-v4-flash-thinking', 'deepseek-v4-flash-nosearch', 'deepseek-v4-flash-thinking-nosearch'],
     baseUrl: 'http://127.0.0.1:9655',
     apiKey: 'local',
     promptChars: 120000,

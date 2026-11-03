@@ -85,7 +85,7 @@ The request body is JSON and at most 64 KB:
 - **`name`** (required): 1-64 characters after trimming.
   - The `id` is derived from it as lowercase `[a-z0-9._-]`, with other characters replaced by `-`. For example, `"Work main"` becomes `work-main`.
   - If a name has no Latin letters or digits, for example a Cyrillic name, the id becomes `account-N`.
-- **`auth`** (required): the exact JSON produced by the Chrome extension ("DeepSeek Auth Exporter") or by `deepseek-auth.json`.
+- **`auth`** (required): the exact JSON produced by the Chrome extension ("unseeked Auth Exporter") or by `deepseek-auth.json`.
   - These aliases are also accepted: `access_token`/`accessToken`/`auth_token`, a `Bearer ` prefix on the token, and a `cookies` array export.
   - `wasmUrl` defaults to the DeepSeek value when missing.
   - The server never fills the token from its own environment.

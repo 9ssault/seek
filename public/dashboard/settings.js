@@ -1,4 +1,4 @@
-// FreeDeepseekAPI dashboard: Settings view.
+// unseeked dashboard: Settings view.
 (() => {
   'use strict';
 
@@ -58,7 +58,7 @@
       section('Access key', 'The PROXY_API_KEY this dashboard signs its requests with.', key, 'key'),
       section('Connection', 'Point any OpenAI- or Anthropic-compatible client at this proxy.', conn, 'route'),
       section('Server', 'Facts from GET /health.', server, 'status'),
-      section('Updates', 'Stable gets a release once it has been checked. Latest gets every release first.', updates, 'download'),
+      section('Updates', 'Pulls from your own repository. Any branch it publishes can be followed: Stable and Latest are used when they exist, otherwise the default branch.', updates, 'download'),
       section('Appearance', null, appearance, 'settings'),
       section('Chat data', `Stored in this browser only, for ${location.origin}. 127.0.0.1 and localhost keep separate stores.`, chat, 'chat')));
     Object.assign(st.els, { key, conn, server, updates, appearance, chat });
@@ -232,7 +232,13 @@
   }
 
   // ---------------------------------------------------------------- updates
-  const CHANNEL_LABEL = { stable: 'Stable', latest: 'Latest' };
+  const CHANNEL_LABEL = { stable: 'Stable', latest: 'Latest', main: 'Main', master: 'Master' };
+  // Any branch the repo publishes is a channel. A personal fork usually has one, and the
+  // dashboard must offer it instead of the two release names it will never see.
+  const channelName = (name) => CHANNEL_LABEL[name] || name;
+  const channelDesc = (name, isDefault) => (name === 'stable' ? 'Releases that have been checked'
+    : name === 'latest' ? 'Every release, as soon as it is out'
+      : isDefault ? 'Your repository’s default branch' : `Branch ${name}`);
   const BLOCKED = {
     local_changes: 'You have local changes, so update from a terminal:',
     diverged: 'Your branch has its own commits, so update from a terminal:',
@@ -250,7 +256,10 @@
     try {
       st.update.status = await F.api('GET', '/admin/update');
       st.update.error = null;
-      if (!st.update.channel) st.update.channel = st.update.status.channel || 'stable';
+      if (!st.update.channel) {
+        st.update.channel = st.update.status.channel || st.update.status.default_channel
+          || (st.update.status.branches || [])[0] || 'main';
+      }
     } catch (e) {
       if (F.handleGate(e)) return;
       st.update.error = e;
@@ -330,8 +339,9 @@
     if (!s) { host.replaceChildren(h('div', { class: 'set-group' }, row('Version', null, h('span', { class: 'quiet', text: 'Loading…' }), null, 'download'))); return; }
     const busy = updateBusy(u);
     // Channel name in the label face; a branch name stays exactly as git spells it.
-    const where = s.channel ? [h('span', { text: `${CHANNEL_LABEL[s.channel]} channel` })]
+    const where = s.channel ? [h('span', { text: `${channelName(s.channel)} channel` })]
       : s.branch ? [h('span', { text: 'Branch' }), h('code', { class: 'mono-id update-branch', text: s.branch })] : [h('span', { text: 'No channel' })];
+    if (s.repo) where.push(h('code', { class: 'mono-id update-repo', text: s.repo }));
     const checkBtn = F.btn(u.phase === 'checking' ? 'Checking…' : 'Check for updates', { kind: 'primary', icon: 'reload', onclick: checkUpdate });
     if (busy || s.method !== 'git') checkBtn.setAttribute('aria-disabled', 'true');
     // The installed build over a humpback breaking the surface (MEDIA.md), the check on its right.
@@ -357,16 +367,19 @@
       b.addEventListener('click', () => { if (busy || u.channel === value) return; u.channel = value; u.check = null; u.phase = 'idle'; u.message = null; renderUpdates(); });
       return b;
     };
+    const branches = (u.check && Array.isArray(u.check.branches) && u.check.branches.length)
+      ? u.check.branches
+      : (Array.isArray(s.branches) && s.branches.length ? s.branches : ['stable', 'latest']);
+    const defaultBranch = (u.check && u.check.default_channel) || s.default_channel || branches[0];
     const tiles = h('div', { class: 'channel-tiles', role: 'radiogroup', 'aria-label': 'Update channel' },
-      tile('stable', 'Stable', 'Releases that have been checked'),
-      tile('latest', 'Latest', 'Every release, as soon as it is out'));
+      ...branches.map((branch) => tile(branch, channelName(branch), channelDesc(branch, branch === defaultBranch))));
     const panel = h('div', { class: 'update-panel' }, hero, tiles);
     const parts = [panel];
     if (u.message) parts.push(F.notice(u.message.tone, u.message.title, u.message.text));
     const c = u.check;
     if (u.phase === 'switched') {
       const ch = u.installed && u.installed.installed ? u.installed.installed.channel : u.channel;
-      panel.append(h('div', { class: 'update-result' }, row(`Now on ${CHANNEL_LABEL[ch]}`, 'Same code as before, so there is nothing to restart. Updates on this channel show up here.', null, null, 'success')));
+      panel.append(h('div', { class: 'update-result' }, row(`Now on ${channelName(ch)}`, 'Same code as before, so there is nothing to restart. Updates on this channel show up here.', null, null, 'success')));
     } else if (u.phase === 'installed' || u.phase === 'restarting') {
       const inst = u.installed ? u.installed.installed : null;
       const auto = (u.installed ? u.installed.restart : s.restart) === 'auto';
@@ -377,12 +390,12 @@
           auto ? 'Restart the proxy to start using it. Open chats keep going after the restart.' : 'Stop the proxy and start it again with npm start to use it.',
           auto ? restartBtn : null, null, 'success')));
     } else if (c && c.upToDate) {
-      panel.append(h('div', { class: 'update-result' }, row(`You're on the newest ${CHANNEL_LABEL[c.channel]} release`, c.available.version ? `v${c.available.version} · ${c.available.commit}` : c.available.commit, null, null, 'success')));
+      panel.append(h('div', { class: 'update-result' }, row(`You're on the newest ${channelName(c.channel)} release`, c.available.version ? `v${c.available.version} · ${c.available.commit}` : c.available.commit, null, null, 'success')));
     } else if (c && c.switchOnly) {
       const switchBtn = F.btn(u.phase === 'installing' ? 'Switching…' : 'Switch', { kind: 'primary', icon: 'route', onclick: installUpdate });
       if (!c.canInstall || busy) switchBtn.setAttribute('aria-disabled', 'true');
       panel.append(h('div', { class: 'update-result' },
-        row(`Switch to ${CHANNEL_LABEL[c.channel]}`, `You already run this version${c.available.version ? ` (v${c.available.version} · ${c.available.commit})` : ''}. Switching makes this copy follow ${CHANNEL_LABEL[c.channel]} and get its updates.`,
+        row(`Switch to ${channelName(c.channel)}`, `You already run this version${c.available.version ? ` (v${c.available.version} · ${c.available.commit})` : ''}. Switching makes this copy follow ${channelName(c.channel)} and get its updates.`,
           c.canInstall ? switchBtn : null, null, 'route')));
       if (!c.canInstall && c.blockedReason) {
         panel.append(h('div', { class: 'update-result update-byhand' },
@@ -394,7 +407,7 @@
       if (!c.canInstall || busy) installBtn.setAttribute('aria-disabled', 'true');
       const changes = c.changes.slice(0, 8);
       panel.append(h('div', { class: 'update-result' },
-        row(c.available.version ? `v${c.available.version} is available` : 'An update is available', `${CHANNEL_LABEL[c.channel]} · ${c.available.commit}`, c.canInstall ? installBtn : null, null, 'download'),
+        row(c.available.version ? `v${c.available.version} is available` : 'An update is available', `${channelName(c.channel)} · ${c.available.commit}`, c.canInstall ? installBtn : null, null, 'download'),
         changes.length ? h('ul', { class: 'update-changes' }, changes.map(ch => h('li', null, h('span', { class: 'update-subject', text: ch.subject }), h('code', { class: 'mono-id', text: ch.commit })))) : null,
         c.changes.length > changes.length ? h('p', { class: 'set-hint update-more', text: `and ${c.changes.length - changes.length} more` }) : null));
       if (!c.canInstall && c.blockedReason) {

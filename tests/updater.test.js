@@ -72,10 +72,12 @@ test('status reports the version, commit, channel and how a restart happens', as
   assert.equal(plain.restart, 'manual');
 });
 
-test('an unknown channel is refused before any git call', async () => {
+test('an unsafe channel name is refused before any git call', async () => {
   const { exec, calls } = fakeGit(base());
   const updater = createUpdater({ root: checkout(), exec, env: {} });
-  for (const bad of ['main', 'stable; rm -rf /', '', undefined]) {
+  // A personal repo publishes `main` and nothing else, so a branch name is not rejected
+  // for being off the release list — only for not being a branch name at all.
+  for (const bad of ['stable; rm -rf /', '../main', '--upload-pack=evil', '-f', 'a/b/']) {
     await assert.rejects(updater.check(bad), err => err.status === 400 && err.type === 'invalid_channel');
   }
   assert.equal(calls.length, 0);

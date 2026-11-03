@@ -1,4 +1,4 @@
-// FreeDeepseekAPI dashboard: Usage view (GET /admin/usage).
+// unseeked dashboard: Usage view (GET /admin/usage).
 (() => {
   'use strict';
 

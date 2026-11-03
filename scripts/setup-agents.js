@@ -52,14 +52,17 @@ const UPSTREAM_MODELS = [
 // DeepSeek thinks and writes code, Grok is the second coding brain, Claude audits. A
 // picker that lists fifteen vendor ids makes the operator choose a vendor per request,
 // which is the thing this id exists to remove.
-const MERGED_MODEL = 'seek';
+// The product's own id. `seek` stays a selectable alias so a config written before the
+// rename keeps resolving to the same merged route.
+const MERGED_MODEL = 'unseeked';
+const LEGACY_MODEL_ALIAS = 'seek';
 // Selecting from this list, in a flag or a picker, is how a config names an upstream.
 // VALID_MODELS stays the servable DeepSeek set because the Codex catalog and the
 // dashboard's model list key off it.
-const SELECTABLE_MODELS = [MERGED_MODEL, ...VALID_MODELS, ...UPSTREAM_MODELS];
+const SELECTABLE_MODELS = [MERGED_MODEL, LEGACY_MODEL_ALIAS, ...VALID_MODELS, ...UPSTREAM_MODELS];
 // What an agent's model picker shows: the merged id first, then the explicit DeepSeek
 // variants for anyone who wants to pin one. Vendor ids stay selectable by flag.
-const PICKER_MODELS = [MERGED_MODEL, ...VALID_MODELS];
+const PICKER_MODELS = [MERGED_MODEL, LEGACY_MODEL_ALIAS, ...VALID_MODELS];
 // Which ids think before they answer. The gateway sets the flag itself; the agents only
 // use this to show a reasoning hint next to a model in their own pickers.
 const THINKING_MODELS = new Set([
@@ -79,11 +82,12 @@ const CODEX_NATIVE_SEARCH_INSTRUCTIONS = 'Do not use the Codex/harness web searc
 // Each variant gets its own name, under the product's own name. A bare upstream model
 // name in the picker made the agent introduce itself as somebody else's model.
 const OPENCODE_MODEL_NAMES = {
-  'seek': 'seek — DeepSeek · Grok · Claude',
-  'deepseek-v4-flash': 'seek Flash + web',
-  'deepseek-v4-flash-thinking': 'seek Flash Thinking + web',
-  'deepseek-v4-flash-nosearch': 'seek Flash',
-  'deepseek-v4-flash-thinking-nosearch': 'seek Flash Thinking',
+  'unseeked': 'unseeked — DeepSeek · Grok · Claude',
+  'seek': 'unseeked (legacy id)',
+  'deepseek-v4-flash': 'unseeked Flash + web',
+  'deepseek-v4-flash-thinking': 'unseeked Flash Thinking + web',
+  'deepseek-v4-flash-nosearch': 'unseeked Flash',
+  'deepseek-v4-flash-thinking-nosearch': 'unseeked Flash Thinking',
   'claude-sonnet-4-6': 'Claude Sonnet 4.6',
   'claude-haiku-4-5': 'Claude Haiku 4.5',
   'claude-sonnet-4-5': 'Claude Sonnet 4.5',
@@ -96,7 +100,7 @@ const OPENCODE_MODEL_NAMES = {
   'grok-4-fast': 'Grok 4 Fast',
   'grok-code-fast-1': 'Grok Code Fast 1',
 };
-const OPENCODE_PROVIDER_LABEL = 'seek';
+const OPENCODE_PROVIDER_LABEL = 'unseeked';
 // The proxy cuts one upstream prompt to DEEPSEEK_MAX_PROMPT_CHARS characters
 // (120k ≈ 30k tokens) and drops the middle beyond that, so advertising a 1M-token
 // window made the agent fill a context that was then silently truncated.

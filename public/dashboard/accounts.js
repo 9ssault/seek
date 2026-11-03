@@ -1,4 +1,4 @@
-// FreeDeepseekAPI dashboard: Accounts view, account inspector, add / remove flows.
+// unseeked dashboard: Accounts view, account inspector, add / remove flows.
 (() => {
   'use strict';
 
@@ -486,7 +486,7 @@
     const add = F.btn('Add account', { kind: 'primary', icon: 'plus', onclick: (e) => openAdd(e.currentTarget) });
     return h('div', { class: 'empty' },
       h('p', { class: 'empty-title', text: 'No accounts are loaded.' }),
-      h('p', { class: 'empty-text', text: 'Add a DeepSeek session, or a Claude or Grok cookie jar exported by the seek Auth Exporter extension, or import one from a terminal and reload:' }),
+      h('p', { class: 'empty-text', text: 'Add a DeepSeek session, or a Claude or Grok cookie jar exported by the unseeked Auth Exporter extension, or import one from a terminal and reload:' }),
       F.codeLine('npm run auth:import'),
       h('div', { class: 'empty-actions' }, add, F.btn('Reload from disk', { icon: 'reload', onclick: (e) => reload(e.currentTarget) })));
   }
@@ -955,7 +955,7 @@
     const code = (text) => h('code', { text });
     const addTitle = h('h2', { class: 'add-title', id: 'add-title', text: 'Add an account' });
     const addSteps = h('ol', { class: 'add-steps', 'aria-label': 'Where the file comes from' });
-    const installStep = () => step(1, 'Install seek Auth Exporter', [h('span', { text: 'In ' }), code('chrome://extensions'), h('span', { text: ' turn on Developer mode, then Load unpacked → the ' }), code('chrome-extension'), h('span', { text: ' folder of FreeDeepseekAPI' })]);
+    const installStep = () => step(1, 'Install unseeked Auth Exporter', [h('span', { text: 'In ' }), code('chrome://extensions'), h('span', { text: ' turn on Developer mode, then Load unpacked → the ' }), code('chrome-extension'), h('span', { text: ' folder of unseeked' })]);
     // Each upstream needs its own sign-in page and file, so the guide follows
     // whatever provider the dropped file turned out to be.
     const renderSteps = (provider) => {

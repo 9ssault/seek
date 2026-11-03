@@ -1,4 +1,4 @@
-// FreeDeepseekAPI dashboard: Requests view (live request log + row inspector).
+// unseeked dashboard: Requests view (live request log + row inspector).
 (() => {
   'use strict';
 

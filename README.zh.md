@@ -1,15 +1,15 @@
 <p align="center">
-  <img src="docs/assets/logo.png" alt="FreeDeepseekAPI" width="160" />
+  <img src="docs/assets/logo.png" alt="unseeked" width="160" />
 </p>
 
-<h1 align="center">FreeDeepseekAPI</h1>
+<h1 align="center">unseeked</h1>
 
 <p align="center">
   <strong>面向 DeepSeek Web Chat 的本地 OpenAI 兼容 API 代理</strong>
 </p>
 
 <p align="center">
-  <a href="https://github.com/dekrezz/FreeDeepseekAPI/blob/main/LICENSE"><img alt="Apache License 2.0" src="https://img.shields.io/badge/license-Apache%202.0-green.svg" /></a>
+  <a href="https://github.com/9ssault/unseeked/blob/main/LICENSE"><img alt="Apache License 2.0" src="https://img.shields.io/badge/license-Apache%202.0-green.svg" /></a>
   <img alt="Node.js 18 plus" src="https://img.shields.io/badge/node-18%2B-339933.svg" />
   <img alt="No npm dependencies" src="https://img.shields.io/badge/dependencies-0-blue.svg" />
   <img alt="OpenAI compatible" src="https://img.shields.io/badge/OpenAI-compatible-111111.svg" />
@@ -34,20 +34,20 @@
 </p>
 
 <p align="center">
-  <a href="#账号面板"><img src="docs/assets/dashboard.png" alt="FreeDeepseekAPI 控制面板：基于 DeepSeek Web 的内置聊天" width="880" /></a>
+  <a href="#账号面板"><img src="docs/assets/dashboard.png" alt="unseeked 控制面板：基于 DeepSeek Web 的内置聊天" width="880" /></a>
 </p>
 
 ## 从这里开始
 
-**这是什么。** 你在 [chat.deepseek.com](https://chat.deepseek.com) 有一个免费的 DeepSeek 账号。FreeDeepseekAPI 运行在你的电脑上，把这个账号变成一个 API，地址是 `http://127.0.0.1:9655`，和付费 AI 服务给你的地址是同一类东西。任何能对接 OpenAI 或 Anthropic 的应用都可以通过它使用 DeepSeek：Open WebUI、Cursor、Claude Code、Codex，或者你自己的脚本。不需要付费的 API 密钥：用的是你自己的账号，跑在你自己的电脑上。
+**这是什么。** 你在 [chat.deepseek.com](https://chat.deepseek.com) 有一个免费的 DeepSeek 账号。unseeked 运行在你的电脑上，把这个账号变成一个 API，地址是 `http://127.0.0.1:9655`，和付费 AI 服务给你的地址是同一类东西。任何能对接 OpenAI 或 Anthropic 的应用都可以通过它使用 DeepSeek：Open WebUI、Cursor、Claude Code、Codex，或者你自己的脚本。不需要付费的 API 密钥：用的是你自己的账号，跑在你自己的电脑上。
 
 **你需要：** [Node.js](https://nodejs.org) 18 或更高版本、Git、Google Chrome，以及一个免费的 DeepSeek 账号。
 
 ### 1. 一分钟启动
 
 ```bash
-git clone --branch stable https://github.com/dekrezz/FreeDeepseekAPI.git
-cd FreeDeepseekAPI
+git clone --branch stable https://github.com/9ssault/unseeked.git
+cd unseeked
 npm run auth
 npm run dashboard
 ```
@@ -79,7 +79,7 @@ npm run setup:agents
 
 ---
 
-FreeDeepseekAPI 在本机启动一个 API 服务，后端是 **DeepSeek Web Chat**（[chat.deepseek.com](https://chat.deepseek.com)）。Open WebUI、LiteLLM、Hermes、Claude Code、Codex、OpenCode、OpenClaw、Cursor，以及任何 OpenAI 兼容客户端都可以连上来。
+unseeked 在本机启动一个 API 服务，后端是 **DeepSeek Web Chat**（[chat.deepseek.com](https://chat.deepseek.com)）。Open WebUI、LiteLLM、Hermes、Claude Code、Codex、OpenCode、OpenClaw、Cursor，以及任何 OpenAI 兼容客户端都可以连上来。
 
 它使用你已经登录的 DeepSeek 账号。本地服务接收 API 请求，再沿着保存好的 Web 会话继续聊。不需要 `api.deepseek.com` 的付费密钥。
 
@@ -159,8 +159,8 @@ FreeDeepseekAPI 在本机启动一个 API 服务，后端是 **DeepSeek Web Chat
 ## 快速开始
 
 ```bash
-git clone --branch stable https://github.com/dekrezz/FreeDeepseekAPI.git
-cd FreeDeepseekAPI
+git clone --branch stable https://github.com/9ssault/unseeked.git
+cd unseeked
 npm run auth
 npm start
 ```
@@ -209,8 +209,8 @@ PROXY_CORS_ORIGINS='https://ui.example.com,http://192.168.1.20:3000'
 ## Windows
 
 ```powershell
-git clone --branch stable https://github.com/dekrezz/FreeDeepseekAPI.git
-cd FreeDeepseekAPI
+git clone --branch stable https://github.com/9ssault/unseeked.git
+cd unseeked
 npm run auth
 npm start
 ```
@@ -229,8 +229,8 @@ npm run auth
 ## Linux / Chromium
 
 ```bash
-git clone --branch stable https://github.com/dekrezz/FreeDeepseekAPI.git
-cd FreeDeepseekAPI
+git clone --branch stable https://github.com/9ssault/unseeked.git
+cd unseeked
 CHROME_PATH=$(which chromium) npm run auth
 npm start
 ```
@@ -258,13 +258,13 @@ npm run auth
 2. 把 `deepseek-auth.json` 拷到 VPS：
 
 ```bash
-scp deepseek-auth.json user@your-vps:/opt/FreeDeepseekAPI/deepseek-auth.json
+scp deepseek-auth.json user@your-vps:/opt/unseeked/deepseek-auth.json
 ```
 
 3. 导入并检查：
 
 ```bash
-cd /opt/FreeDeepseekAPI
+cd /opt/unseeked
 npm run auth:import -- --input ./deepseek-auth.json
 npm run doctor -- --offline
 ```
@@ -381,7 +381,7 @@ npm run doctor -- --offline
 
 ## 会话复用
 
-FreeDeepseekAPI 不会为每一个 HTTP 请求新开一个 DeepSeek 聊天。
+unseeked 不会为每一个 HTTP 请求新开一个 DeepSeek 聊天。
 
 - 同一个 `x-agent-session`、`session` 或 `user` 对应同一个 DeepSeek 聊天。
 - 已经有会话时，代理用 `parent_message_id` 接着往下写。
@@ -510,7 +510,7 @@ npm run auth:import -- --input ~/Downloads/deepseek-auth.json --output ./account
 
 ## 更新
 
-DeepSeek 会不时调整网页聊天，FreeDeepseekAPI 会跟着更新。请让你的副本保持最新。
+DeepSeek 会不时调整网页聊天，unseeked 会跟着更新。请让你的副本保持最新。
 
 两个渠道，都是 GitHub 上的分支：
 
@@ -561,7 +561,7 @@ npm run setup:agents -- --target codex --model deepseek-v4-flash
 
 代理需要已经在听端口。默认地址是 `http://127.0.0.1:9655`。换地址用 `--base-url`。如果设了 `PROXY_API_KEY`，它会被写进代理配置。
 
-安装只是把 FreeDeepseekAPI 加成分开的配置。它不会替换你现在用的 Claude、GPT 或其他登录。
+安装只是把 unseeked 加成分开的配置。它不会替换你现在用的 Claude、GPT 或其他登录。
 
 | 代理 | 写入位置 | 怎么选 |
 |---|---|---|
@@ -904,7 +904,7 @@ BASE_URL=http://127.0.0.1:9655 MODEL=deepseek-v4-flash npm run test:live
 
 ## 项目状态
 
-FreeDeepseekAPI 是本地网页聊天代理。它依赖 chat.deepseek.com 当前的协议。协议一变，登录或请求体就可能要跟着改。
+unseeked 是本地网页聊天代理。它依赖 chat.deepseek.com 当前的协议。协议一变，登录或请求体就可能要跟着改。
 
 调用突然不行时：
 
@@ -926,7 +926,7 @@ FreeDeepseekAPI 是本地网页聊天代理。它依赖 chat.deepseek.com 当前
 
 ## Star
 
-<a href="https://github.com/dekrezz/FreeDeepseekAPI/stargazers">
+<a href="https://github.com/9ssault/unseeked/stargazers">
   <img src="docs/assets/stars.svg" alt="Star 历史" width="800" />
 </a>
 

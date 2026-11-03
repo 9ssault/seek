@@ -1,15 +1,15 @@
 <p align="center">
-  <img src="docs/assets/logo.png" alt="FreeDeepseekAPI" width="160" />
+  <img src="docs/assets/logo.png" alt="unseeked" width="160" />
 </p>
 
-<h1 align="center">FreeDeepseekAPI</h1>
+<h1 align="center">unseeked</h1>
 
 <p align="center">
   <strong>Local OpenAI-compatible API proxy for DeepSeek Web Chat</strong>
 </p>
 
 <p align="center">
-  <a href="https://github.com/dekrezz/FreeDeepseekAPI/blob/main/LICENSE"><img alt="Apache License 2.0" src="https://img.shields.io/badge/license-Apache%202.0-green.svg" /></a>
+  <a href="https://github.com/9ssault/unseeked/blob/main/LICENSE"><img alt="Apache License 2.0" src="https://img.shields.io/badge/license-Apache%202.0-green.svg" /></a>
   <img alt="Node.js 18 plus" src="https://img.shields.io/badge/node-18%2B-339933.svg" />
   <img alt="No npm dependencies" src="https://img.shields.io/badge/dependencies-0-blue.svg" />
   <img alt="OpenAI compatible" src="https://img.shields.io/badge/OpenAI-compatible-111111.svg" />
@@ -34,20 +34,20 @@
 </p>
 
 <p align="center">
-  <a href="#dashboard"><img src="docs/assets/dashboard.png" alt="FreeDeepseekAPI dashboard: built-in chat on top of DeepSeek Web" width="880" /></a>
+  <a href="#dashboard"><img src="docs/assets/dashboard.png" alt="unseeked dashboard: built-in chat on top of DeepSeek Web" width="880" /></a>
 </p>
 
 ## Start here
 
-**What it is.** You have a free DeepSeek account on [chat.deepseek.com](https://chat.deepseek.com). FreeDeepseekAPI runs on your computer and turns that account into an API at `http://127.0.0.1:9655`, the same kind of address paid AI services give you. Any app that can talk to OpenAI or Anthropic can then use DeepSeek through it: Open WebUI, Cursor, Claude Code, Codex, your own scripts. No paid API key: your own account, on your own machine.
+**What it is.** You have a free DeepSeek account on [chat.deepseek.com](https://chat.deepseek.com). unseeked runs on your computer and turns that account into an API at `http://127.0.0.1:9655`, the same kind of address paid AI services give you. Any app that can talk to OpenAI or Anthropic can then use DeepSeek through it: Open WebUI, Cursor, Claude Code, Codex, your own scripts. No paid API key: your own account, on your own machine.
 
 **You need:** [Node.js](https://nodejs.org) 18 or newer, Git, Google Chrome, and a free DeepSeek account.
 
 ### 1. Start it (one minute)
 
 ```bash
-git clone --branch stable https://github.com/dekrezz/FreeDeepseekAPI.git
-cd FreeDeepseekAPI
+git clone https://github.com/9ssault/unseeked.git
+cd unseeked
 npm run auth
 npm run dashboard
 ```
@@ -79,7 +79,7 @@ Something wrong? `npm run doctor` checks your setup, and `curl http://127.0.0.1:
 
 ---
 
-FreeDeepseekAPI runs a local API server in front of **DeepSeek Web Chat** ([chat.deepseek.com](https://chat.deepseek.com)). Point Open WebUI, LiteLLM, Hermes, Claude Code, Codex, OpenCode, OpenClaw, Cursor, or any OpenAI-compatible client at it.
+unseeked runs a local API server in front of **DeepSeek Web Chat** ([chat.deepseek.com](https://chat.deepseek.com)). Point Open WebUI, LiteLLM, Hermes, Claude Code, Codex, OpenCode, OpenClaw, Cursor, or any OpenAI-compatible client at it.
 
 The project uses your normal logged-in DeepSeek account. The local server accepts API requests, then continues that saved Web session. There is no paid `api.deepseek.com` key.
 
@@ -160,8 +160,8 @@ One model is on the site today: **DeepSeek-V4.1-Flash**. The native Web Search b
 ## Quick start
 
 ```bash
-git clone --branch stable https://github.com/dekrezz/FreeDeepseekAPI.git
-cd FreeDeepseekAPI
+git clone https://github.com/9ssault/unseeked.git
+cd unseeked
 npm run auth
 npm start
 ```
@@ -210,8 +210,8 @@ PROXY_CORS_ORIGINS='https://ui.example.com,http://192.168.1.20:3000'
 ## Windows
 
 ```powershell
-git clone --branch stable https://github.com/dekrezz/FreeDeepseekAPI.git
-cd FreeDeepseekAPI
+git clone https://github.com/9ssault/unseeked.git
+cd unseeked
 npm run auth
 npm start
 ```
@@ -230,8 +230,8 @@ When Chrome is missing, `npm run auth` prints the install path for Windows, macO
 ## Linux / Chromium
 
 ```bash
-git clone --branch stable https://github.com/dekrezz/FreeDeepseekAPI.git
-cd FreeDeepseekAPI
+git clone https://github.com/9ssault/unseeked.git
+cd unseeked
 CHROME_PATH=$(which chromium) npm run auth
 npm start
 ```
@@ -259,13 +259,13 @@ npm run auth
 2. Copy `deepseek-auth.json` to the VPS:
 
 ```bash
-scp deepseek-auth.json user@your-vps:/opt/FreeDeepseekAPI/deepseek-auth.json
+scp deepseek-auth.json user@your-vps:/opt/unseeked/deepseek-auth.json
 ```
 
 3. Import it and check the file:
 
 ```bash
-cd /opt/FreeDeepseekAPI
+cd /opt/unseeked
 npm run auth:import -- --input ./deepseek-auth.json
 npm run doctor -- --offline
 ```
@@ -382,7 +382,7 @@ If you see `data.biz_data is null`, `fetch failed`, `401`, `403`, `429`, or a co
 
 ## Session reuse
 
-FreeDeepseekAPI does not open a new DeepSeek chat on every HTTP request.
+unseeked does not open a new DeepSeek chat on every HTTP request.
 
 - One `x-agent-session`, `session`, or `user` value is one DeepSeek chat.
 - A client that sends none (OpenCode, Codex, most OpenAI-compatible tools) gets one chat **per conversation**: the first user turn identifies it, so a new chat no longer continues the previous one. Send a header if you want to control the mapping yourself.
@@ -571,7 +571,7 @@ The container image ships the dashboard. With `--read-only`, actions that write 
 
 ## Updates
 
-DeepSeek changes its Web chat from time to time, and FreeDeepseekAPI follows. Keep your copy current.
+DeepSeek changes its Web chat from time to time, and unseeked follows. Keep your copy current.
 
 Two channels, both branches on GitHub:
 
@@ -628,7 +628,7 @@ npm run verify:integrations
 
 The proxy must already be listening. The default origin is `http://127.0.0.1:9655`. Override it with `--base-url`. If `PROXY_API_KEY` is set, it is copied into the agent config.
 
-Setup adds FreeDeepseekAPI as an opt-in profile. It does not replace Claude, GPT, or whatever you already use.
+Setup adds unseeked as an opt-in profile. It does not replace Claude, GPT, or whatever you already use.
 
 | Agent | What is written | How you select it |
 |---|---|---|
@@ -1068,7 +1068,7 @@ BASE_URL=http://127.0.0.1:9655 MODEL=deepseek-v4-flash npm run test:live
 
 ## Project status
 
-FreeDeepseekAPI is a local Web-chat proxy. It depends on the current chat.deepseek.com contract. When that contract changes, auth or the request body may need an update.
+unseeked is a local Web-chat proxy. It depends on the current chat.deepseek.com contract. When that contract changes, auth or the request body may need an update.
 
 If a call stops working:
 
@@ -1090,7 +1090,7 @@ Security reports go to a private GitHub advisory, not a public issue. See [SECUR
 
 ## Stars
 
-<a href="https://github.com/dekrezz/FreeDeepseekAPI/stargazers">
+<a href="https://github.com/9ssault/unseeked/stargazers">
   <img src="docs/assets/stars.svg" alt="Star history" width="800" />
 </a>
 

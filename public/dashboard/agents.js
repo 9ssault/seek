@@ -1,4 +1,4 @@
-// FreeDeepseekAPI dashboard: Agents view.
+// unseeked dashboard: Agents view.
 // Overview: every coding agent with the path its requests take (agent → the file it reads →
 // proxy address → model). Detail: that path drawn large, the agent's options, a preview of what
 // applying writes, and the config files themselves as the server shows them (secrets masked).

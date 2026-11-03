@@ -8,7 +8,7 @@
 2. Enable **Developer mode** (toggle in the top-right corner)
 3. Click **Load unpacked**
 4. Select the `chrome-extension/` folder inside this project
-5. The "DeepSeek Auth Exporter" icon appears in your toolbar
+5. The "unseeked" icon appears in your toolbar
 
 ### Firefox / Helium (Load Temporary Add-on)
 
@@ -87,7 +87,7 @@ Reloading the extension is required after every update: the popup, the worker an
 | **Read current tab** | Takes the `Authorization` header and `x-hif-*` pair from a request the tab actually sent, plus cookies, then asks DeepSeek who they belong to. A token DeepSeek rejects is shown as **Token rejected by DeepSeek** and cannot be exported |
 | **Copy** | Copies the JSON to your clipboard |
 | **Download** | Saves `deepseek-auth.json`, or `claude-auth.json` when the Claude tab is selected |
-| **Push to Proxy** | POSTs `{ name, provider, auth }` to the running FreeDeepseekAPI server at `http://127.0.0.1:9655/admin/accounts/import`. When the server answers **201** (a new account), this browser is then signed out of DeepSeek — cookies and page storage cleared, tab sent to `/sign_in` — so the login belongs to the proxy only. It is a local sign-out with no server logout call, so the imported token keeps working |
+| **Push to Proxy** | POSTs `{ name, provider, auth }` to the running unseeked server at `http://127.0.0.1:9655/admin/accounts/import`. When the server answers **201** (a new account), this browser is then signed out of DeepSeek — cookies and page storage cleared, tab sent to `/sign_in` — so the login belongs to the proxy only. It is a local sign-out with no server logout call, so the imported token keeps working |
 
 **Auto-push.** Both toggles are on by default: *Push to the proxy as soon as a session is captured* sends a verified capture straight into the pool after **Read current tab**, with no second press, and *Sign this browser out of DeepSeek after adding it to the proxy* applies the local sign-out only to a newly created account (never to a Claude push, which leaves claude.ai signed in). Turn the first one off to keep the push a deliberate step.
 

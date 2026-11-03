@@ -1,4 +1,4 @@
-// FreeDeepseekAPI dashboard: shared core (window.FDSA).
+// unseeked dashboard: shared core (window.FDSA).
 // Fetch wrapper, auth gates, poller and shared store, router helpers, toasts,
 // popovers, tooltips, inspector, formatters. No dependencies, no modules.
 //

@@ -1,4 +1,4 @@
-// FreeDeepseekAPI dashboard: Status view (the track diagram).
+// unseeked dashboard: Status view (the track diagram).
 (() => {
   'use strict';
 

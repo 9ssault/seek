@@ -1,4 +1,4 @@
-// FreeDeepseekAPI dashboard: chart primitives (inline SVG, no libraries).
+// unseeked dashboard: chart primitives (inline SVG, no libraries).
 // Stacked columns, columns with error marks, horizontal bars, the account track
 // lanes, a shared tooltip and table twins. Labels are untrusted: textContent only.
 (() => {

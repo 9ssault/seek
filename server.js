@@ -1567,8 +1567,11 @@ function providerModelIds(provider = 'deepseek') {
 // gateway reads the turn and routes it — DeepSeek thinks and writes code, Grok is the
 // second coding brain when DeepSeek is parked, Claude audits work that already exists.
 // Explicit ids keep working and stay listed after it, so nothing that pins a model breaks.
-const MERGED_MODEL_ID = 'seek';
-const MERGED_MODEL_ALIASES = new Set([MERGED_MODEL_ID, 'seek-auto', 'seek-best', 'auto', 'best']);
+const MERGED_MODEL_ID = 'unseeked';
+// `unseeked` is the product's own id; `seek` stays an accepted alias so a config written
+// before the rename keeps resolving to the same merged route.
+const MERGED_MODEL_ALIASES = new Set([MERGED_MODEL_ID, 'seek', 'seek-auto', 'seek-best',
+    'unseeked', 'unseeked-auto', 'unseeked-best', 'auto', 'best']);
 const MERGED_MODEL_DESCRIPTION = 'One model: DeepSeek for thinking and code, Grok as the second coding brain, Claude for audit.';
 
 function isMergedModelId(model) {
@@ -5275,7 +5278,10 @@ function personaConfig(provider = 'deepseek') {
 const PERSONA_REMINDER = '[Standing instructions] The persona and every rule you were given at the start of this chat are still in force in full. Keep following them exactly; none of them has expired, been relaxed or been replaced.';
 // Hard ceiling only to keep a runaway file from eating the process; not a policy cap.
 const PERSONA_HARD_MAX = 400000;
-const SEEK_PRODUCT_NAME = process.env.SEEK_NAME || 'seek';
+// The product name shown to every model and to the operator. `SEEK_NAME` still wins so a
+// deployment can rename itself, and the old name stays a working alias on the wire.
+const SEEK_PRODUCT_NAME = process.env.SEEK_NAME || 'unseeked';
+const SEEK_LEGACY_NAME = 'seek';
 const SEEK_MAKER = process.env.SEEK_MAKER || 'Hyperion';
 
 // One short line, appended after the persona and tool adapter. Without it an agent
@@ -6971,8 +6977,9 @@ const server = http.createServer(async (req, res) => {
             id: MERGED_MODEL_ID,
             object: 'model',
             created: 1700000000,
-            owned_by: 'seek',
-            real_model: 'seek (DeepSeek · Grok · Claude, routed by task)',
+            owned_by: 'unseeked',
+            real_model: 'unseeked (DeepSeek · Grok · Claude, routed by task)',
+            aliases: ['seek'],
             description: MERGED_MODEL_DESCRIPTION,
             routing: MERGED_ROUTES,
             capabilities: { reasoning: true, web_search: true, files: true, vision: true },
@@ -6997,10 +7004,10 @@ const server = http.createServer(async (req, res) => {
         const data = { ...ALL_MODEL_CAPABILITIES };
         data[MERGED_MODEL_ID] = {
             id: MERGED_MODEL_ID,
-            real_model: 'seek (DeepSeek · Grok · Claude, routed by task)',
+            real_model: 'unseeked (DeepSeek · Grok · Claude, routed by task)',
             description: MERGED_MODEL_DESCRIPTION,
             model_type: 'merged',
-            provider: 'seek',
+            provider: 'unseeked',
             thinking_enabled: true,
             search_enabled: true,
             capabilities: { reasoning: true, web_search: true, files: true, vision: true },

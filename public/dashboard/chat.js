@@ -1,4 +1,4 @@
-// FreeDeepseekAPI dashboard: Chat view + IndexedDB conversation store.
+// unseeked dashboard: Chat view + IndexedDB conversation store.
 //
 // Server facts this file is built around (see API.md):
 // - The reply is generated in full before the SSE stream starts, so the stream

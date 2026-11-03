@@ -55,7 +55,9 @@ function isOurServer(pid, port) {
     if (!Number.isInteger(pid) || pid <= 0 || pid === process.pid) return false;
     const cmdline = readCmdline(pid);
     if (!cmdline) return false;
-    const names = [ROOT, path.basename(ROOT), 'FreeDeepseekAPI', 'free-deepseek-api', 'server.js'];
+    // The checkout may be named for either the product or its old name: a running copy from
+    // before a rebrand is still this gateway and still has to be the one that is stopped.
+    const names = [ROOT, path.basename(ROOT), 'unseeked', 'seek', 'FreeDeepseekAPI', 'free-deepseek-api', 'server.js'];
     return names.some(name => name && cmdline.includes(name));
 }
 

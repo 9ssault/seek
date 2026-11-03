@@ -628,7 +628,7 @@ els.btnPush.addEventListener('click', async () => {
     if (lastError && !lastError.startsWith('Network error') && !lastError.startsWith('Failed to fetch')) {
       showCallout('error', 'Push rejected', lastError);
     } else {
-      showCallout('error', 'Proxy not running', 'Start FreeDeepseekAPI first (npm run dashboard).');
+      showCallout('error', 'Proxy not running', 'Start unseeked first (npm run dashboard).');
     }
     flashButton(els.btnPush, 'Failed');
   }

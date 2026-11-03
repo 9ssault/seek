@@ -1,4 +1,4 @@
-// FreeDeepseekAPI dashboard: shell. Router, toolbar, sidebar, command palette,
+// unseeked dashboard: shell. Router, toolbar, sidebar, command palette,
 // keyboard shortcuts and boot. Loaded last; every view is registered by now.
 (() => {
   'use strict';
@@ -73,7 +73,7 @@
     }
     F.views[r.view].show(r);
     renderToolbar();
-    document.title = `${titleFor(r.view)} · FreeDeepseekAPI`;
+    document.title = `${titleFor(r.view)} · unseeked`;
   }
   window.addEventListener('hashchange', route);
 
@@ -118,7 +118,7 @@
   F.on('chat-title', () => {
     if (app.view !== 'chat') return;
     renderToolbar();
-    document.title = `${titleFor('chat')} · FreeDeepseekAPI`;
+    document.title = `${titleFor('chat')} · unseeked`;
   });
 
 

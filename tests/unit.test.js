@@ -1273,9 +1273,9 @@ test('a persona is sent whole: never trimmed, never middle-cut, additions append
   // The runtime notice is added after the persona, not instead of any of it, and it must
   // not claim a second identity: a "you are seek" line next to a persona makes the model
   // reject both and start negotiating instead of working.
-  assert.match(formatted.systemPrompt, /You are running on seek, a self-hosted gateway to DeepSeek, made by Hyperion/);
+  assert.match(formatted.systemPrompt, /You are running on unseeked, a self-hosted gateway to DeepSeek, made by Hyperion/);
   assert.match(formatted.systemPrompt, /not your identity: the persona and rules above define who you are/);
-  assert.doesNotMatch(formatted.systemPrompt, /\[Identity\] You are seek/);
+  assert.doesNotMatch(formatted.systemPrompt, /\[Identity\] You are unseeked/);
   assert.ok(formatted.systemPrompt.lastIndexOf('[Gateway]') > formatted.systemPrompt.indexOf('RULE 1499'));
   // A continuation instruction is a standing rule, with or without a persona.
   assert.match(formatted.systemPrompt, /\[Continuation\]/);
@@ -2050,12 +2050,12 @@ test('one-click agent setup adds opt-in providers without replacing native defau
   assert.equal(opencode.tools.websearch, false);
   assert.equal(opencode.tools.webfetch, false);
   assert.equal(opencode.permission.websearch, 'deny');
-  assert.equal(opencode.provider.freedeepseek.name, 'seek');
-  assert.equal(opencode.provider.freedeepseek.models['deepseek-v4-flash'].name, 'seek Flash + web');
-  // One merged id first (DeepSeek · Grok · Claude, routed by task), then the explicit
-  // DeepSeek variants for anyone who wants to pin one.
-  assert.deepEqual(Object.keys(opencode.provider.freedeepseek.models), ['seek', 'deepseek-v4-flash', 'deepseek-v4-flash-thinking', 'deepseek-v4-flash-nosearch', 'deepseek-v4-flash-thinking-nosearch']);
-  assert.equal(opencode.provider.freedeepseek.models['deepseek-v4-flash-thinking'].name, 'seek Flash Thinking + web');
+  assert.equal(opencode.provider.freedeepseek.name, 'unseeked');
+  assert.equal(opencode.provider.freedeepseek.models['deepseek-v4-flash'].name, 'unseeked Flash + web');
+  // One merged id first (DeepSeek · Grok · Claude), the pre-rename id kept so an older
+  // config still resolves, then the explicit DeepSeek variants for pinning one.
+  assert.deepEqual(Object.keys(opencode.provider.freedeepseek.models), ['unseeked', 'seek', 'deepseek-v4-flash', 'deepseek-v4-flash-thinking', 'deepseek-v4-flash-nosearch', 'deepseek-v4-flash-thinking-nosearch']);
+  assert.equal(opencode.provider.freedeepseek.models['deepseek-v4-flash-thinking'].name, 'unseeked Flash Thinking + web');
   // The proxy trims one upstream prompt to DEEPSEEK_MAX_PROMPT_CHARS (120k chars),
   // so the advertised window is that budget in tokens, not 1M.
   assert.equal(opencode.provider.freedeepseek.models['deepseek-v4-flash-thinking'].limit.context, 30000);

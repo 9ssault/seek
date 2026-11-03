@@ -6,7 +6,7 @@ npm run setup:agents -- --all --model deepseek-v4-flash
 npm run setup:agents -- --target claude-code --model deepseek-v4-flash-thinking
 ```
 
-脚本将 FreeDeepseekAPI 添加为可选 profile/provider，不会替换现有的 Opus、Sonnet、GPT 或默认模型。
+脚本将 unseeked 添加为可选 profile/provider，不会替换现有的 Opus、Sonnet、GPT 或默认模型。
 
 `--model` 始终是 DeepSeek-V4.1-Flash，并打开 chat.deepseek.com 的原生搜索，用来查互联网。`-thinking` 打开 DeepThink。`-nosearch` 关闭搜索，这时 Agent 会保留自己的联网工具。旧的 `-search` ID 等同于去掉这个后缀的 ID。
 

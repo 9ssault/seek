@@ -1,4 +1,4 @@
-/* FreeDeepseekAPI dashboard. Graphite surfaces, hairline cards, Geist. The empty chat has the
+/* unseeked dashboard. Graphite surfaces, hairline cards, Geist. The empty chat has the
    glyph field (glyphfield.js): the project mark set in re-rolling letters and digits. Settings
    pages open on deep-ocean photos (MEDIA.md) under a caps DIN headline. No scrollbars: scrolling
    areas fade on the edges that have more. Dark only. CSP: no inline styles; dynamic values
@@ -162,7 +162,6 @@ path, circle, rect, ellipse, line, polyline { vector-effect: non-scaling-stroke;
 .wordmark { display: flex; align-items: center; gap: 10px; min-width: 0; height: 32px; color: var(--ink); text-decoration: none; font-weight: 600; font-size: 0.9375rem; white-space: nowrap; }
 .wordmark:hover { text-decoration: none; }
 .wordmark-mark { width: 24px; height: 24px; flex: none; display: block; object-fit: contain; }
-.wordmark-sub { color: var(--ink-3); font-weight: 500; }
 .rail-toggle { width: 30px; height: 30px; border-radius: 7px; background: transparent; color: var(--ink-2); }
 @media (hover: hover) and (pointer: fine) { .rail-toggle:hover:not([aria-disabled=true]) { background: var(--hover-wash); color: var(--ink); } }
 .rail-actions { list-style: none; margin: 0; padding: 0; display: grid; gap: 0; }

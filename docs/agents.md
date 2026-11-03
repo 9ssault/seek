@@ -1,6 +1,6 @@
 # One-click agent setup
 
-`npm run setup:agents` adds FreeDeepseekAPI as an **opt-in provider/profile**. It does not replace the current Claude, GPT, or other default model.
+`npm run setup:agents` adds unseeked as an **opt-in provider/profile**. It does not replace the current Claude, GPT, or other default model.
 
 ```bash
 npm run setup:agents
@@ -90,7 +90,7 @@ The OpenCode target changes more than the `freedeepseek` provider, in both modes
 
 - Turns off OpenCode's own `websearch` and `webfetch` tools for **every** model, and denies them in `permission` (DeepSeek searches the web itself).
 - Resizes attached images to at most 2000 × 2000 px for every model (`attachment.image`).
-- Adds a marked FreeDeepseekAPI section to `~/.config/opencode/AGENTS.md`, which every OpenCode model reads.
+- Adds a marked unseeked section to `~/.config/opencode/AGENTS.md`, which every OpenCode model reads.
 - If the default `model` is already a `freedeepseek/` model, sets it to `freedeepseek/deepseek-v4-flash-thinking` (add mode).
 
 ## Dashboard: Agents page

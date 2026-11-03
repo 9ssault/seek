@@ -1,4 +1,4 @@
-// FreeDeepseekAPI dashboard: safe markdown renderer.
+// unseeked dashboard: safe markdown renderer.
 // Builds DOM with createElement + textContent only; never innerHTML. Anything the
 // parser does not understand renders as literal text. Links: http, https, mailto.
 (() => {

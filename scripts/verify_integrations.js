@@ -100,7 +100,7 @@ async function fetchProxy(baseUrl, apiKey, { timeoutMs = 5000 } = {}) {
         return { up: false, reason: `GET /health answered ${health.status}`, models: [], accounts: null, promptChars: null };
     }
     const h = health.json;
-    // /v1/models is the source of truth: it carries the merged `seek` id and the Claude and
+    // /v1/models is the source of truth: it carries the merged `unseeked` id and the Claude and
     // Grok ids, which the private health list does not. Fall back to health only when the
     // proxy answers without a list.
     let models = Array.isArray(h.models) ? h.models : [];

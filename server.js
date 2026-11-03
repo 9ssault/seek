@@ -1562,6 +1562,94 @@ function providerModelIds(provider = 'deepseek') {
     return SUPPORTED_MODEL_IDS;
 }
 
+// ─── One model, three upstreams ─────────────────────────────────────────────
+// A model picker should not force a vendor decision per request. `seek` is ONE id: the
+// gateway reads the turn and routes it — DeepSeek thinks and writes code, Grok is the
+// second coding brain when DeepSeek is parked, Claude audits work that already exists.
+// Explicit ids keep working and stay listed after it, so nothing that pins a model breaks.
+const MERGED_MODEL_ID = 'seek';
+const MERGED_MODEL_ALIASES = new Set([MERGED_MODEL_ID, 'seek-auto', 'seek-best', 'auto', 'best']);
+const MERGED_MODEL_DESCRIPTION = 'One model: DeepSeek for thinking and code, Grok as the second coding brain, Claude for audit.';
+
+function isMergedModelId(model) {
+    const raw = String(model || '').toLowerCase().trim().replace(/^[a-z0-9_-]+\//, '');
+    return raw ? MERGED_MODEL_ALIASES.has(raw) : false;
+}
+
+// An audit asks for a verdict on work that exists, so it is matched first: "review this
+// function" is a review, not a request to write one. Code and thinking are next.
+const MERGED_ROLE_RULES = {
+    audit: /\b(?:audit|code review|security review|second opinion|threat model|vulnerab\w*|pentest (?:report|writeup)|compliance|is this safe|critique|find (?:the )?(?:bugs|issues|flaws)|what(?:'s| is) wrong with|red[- ]team the)\b/i,
+    code: /\b(?:implement|refactor|fix|patch|debug|migrate|rename|optimi[sz]e|scaffold|boilerplate)\b|\bfunction\s+\w+\s*\(|\bclass\s+\w+|\b(?:const|let|def|fn|pub fn|package|import)\s|```|\.(?:js|ts|tsx|jsx|py|go|rs|java|rb|php|cc|cpp|h|cs|sh|sql|ya?ml)\b/i,
+    think: /\b(?:why|prove|derive|analys[ei]s|analy[sz]e|design|architecture|plan|trade-?off|reason through|compare|evaluate|estimate|strategy)\b/i,
+};
+
+// Role → provider/model ladder. The first entry whose provider has a login that can
+// serve right now wins; if every pool is parked the first entry answers, so the error
+// names the model the caller actually wanted.
+const MERGED_ROUTES = {
+    audit: [['claude', 'claude-sonnet-4-6'], ['deepseek', 'deepseek-v4-flash-thinking'], ['grok', 'grok-3-reasoning']],
+    code: [['deepseek', 'deepseek-v4-flash-thinking'], ['grok', 'grok-3-reasoning'], ['claude', 'claude-sonnet-4-6']],
+    think: [['deepseek', 'deepseek-v4-flash-thinking'], ['grok', 'grok-3-reasoning'], ['claude', 'claude-haiku-4-5']],
+    general: [['deepseek', 'deepseek-v4-flash'], ['grok', 'grok-3-mini-companion'], ['claude', 'claude-haiku-4-5']],
+};
+const MERGED_PROVIDER_DEFAULT = { deepseek: 'deepseek-v4-flash', claude: 'claude-haiku-4-5', grok: 'grok-3-mini-companion' };
+
+// System prompt plus the last few turns, bounded: the classifier must not cost more than
+// the routing decision is worth.
+function mergedRouteText(messages) {
+    const parts = [];
+    for (const message of (Array.isArray(messages) ? messages : []).slice(-6)) {
+        if (!message || message.role === 'tool') continue;
+        const content = normalizeMessageContent(message.content);
+        if (typeof content !== 'string' || !content.trim()) continue;
+        parts.push(message.role === 'system' ? content.slice(0, 8000) : content);
+    }
+    return parts.join('\n').slice(0, 24000);
+}
+
+function mergedRoleForRequest(messages) {
+    const text = mergedRouteText(messages);
+    if (!text) return 'general';
+    if (MERGED_ROLE_RULES.audit.test(text)) return 'audit';
+    const fences = (text.match(/```/g) || []).length;
+    if (fences >= 2 || MERGED_ROLE_RULES.code.test(text)) return 'code';
+    if (MERGED_ROLE_RULES.think.test(text)) return 'think';
+    return 'general';
+}
+
+// Which upstreams have a login that can serve this instant.
+function servableProviderSet(now = Date.now()) {
+    const ready = new Set();
+    for (const account of accounts) {
+        if (!accountCanServe(account, now)) continue;
+        if (account.provider === claudeWeb.PROVIDER) ready.add(claudeWeb.PROVIDER);
+        else if (account.provider === grokWeb.PROVIDER) ready.add(grokWeb.PROVIDER);
+        else ready.add('deepseek');
+    }
+    return ready;
+}
+
+function applyMergedModelRoute(params, messages, { pinnedAccountId = '' } = {}) {
+    if (!params || !isMergedModelId(params.model)) return null;
+    const role = mergedRoleForRequest(messages);
+    const ladder = MERGED_ROUTES[role] || MERGED_ROUTES.general;
+    const ready = servableProviderSet();
+    // A pinned login is an instruction: route to that provider, keeping the role's intent.
+    const pinned = pinnedAccountId
+        ? accounts.find(account => account.id === pinnedAccountId || account.file === pinnedAccountId)
+        : null;
+    const pinnedProvider = pinned
+        ? (pinned.provider === claudeWeb.PROVIDER ? claudeWeb.PROVIDER
+            : pinned.provider === grokWeb.PROVIDER ? grokWeb.PROVIDER : 'deepseek')
+        : '';
+    const chosen = pinnedProvider
+        ? (ladder.find(([provider]) => provider === pinnedProvider) || [pinnedProvider, MERGED_PROVIDER_DEFAULT[pinnedProvider]])
+        : (ladder.find(([provider]) => ready.has(provider)) || ladder[0]);
+    params.model = chosen[1];
+    return { role, provider: chosen[0], model: chosen[1], ready: [...ready], pinned: Boolean(pinnedProvider) };
+}
+
 // ─── DeepSeek ⇄ Claude bridge ─────────────────────────────────────────────
 // Two pools, one gateway. When every login on the requested side is parked, the task
 // is answered by the other upstream instead of coming back as a 429 — but only by a
@@ -3276,6 +3364,195 @@ function listDsmlToolCalls(text) {
     return calls;
 }
 
+// ─── The model's own tag dialect ─────────────────────────────────────────────
+// The web model does not always reproduce the JSON envelope it was asked for. When it
+// falls back it writes its native dialect instead: `<|tool_call|>`, `<tool_call>`,
+// `<function_call>`, `<invoke name="…">`, with `<parameter name="…">` children — and,
+// when the name never made it onto the tag, a first `<parameter name="name">shell</parameter>`.
+// Those turns used to be rejected as "invalid or truncated markup" and retried on the
+// upstream (10-35s each, several per request), and when a retry also failed the raw tags
+// leaked into OpenCode as assistant text. This reader accepts that dialect on the first
+// try. It is structure-only: a call is produced only when a name resolves AND every child
+// parameter is well formed, so prose that happens to contain a stray `<` never executes.
+const LOOSE_CALL_TAGS = new Set(['tool_call', 'function_call', 'invoke']);
+const LOOSE_WRAPPER_TAGS = new Set(['tool_calls', 'function_calls']);
+const LOOSE_PARAM_TAGS = new Set(['parameter', 'arg', 'argument', 'param']);
+// A parameter carrying the tool name rather than an argument value.
+const LOOSE_NAME_PARAMS = new Set(['name', 'tool', 'tool_name', 'function', 'function_name']);
+const LOOSE_MARKUP_RE = /[|｜]+\s*DSML\s*[|｜]+|[<＜]\s*[|｜]*\s*\/?\s*(?:DSML\s*[|｜]*)?(?:[\w.-]+:)?(?:tool[\s_-]*call(?:s)?|function[\s_-]*call(?:s)?|invoke)\b/i;
+
+// `<|tool_call▁begin|>` and `<tool_call>` both end up as {closing:false,name:'tool_call'}.
+function classifyLooseTag(raw) {
+    let token = String(raw || '').replace(/[｜]/g, '|').replace(/[＜]/g, '<').replace(/[＞]/g, '>').trim();
+    if (!token) return null;
+    let closing = false;
+    if (token.startsWith('/')) {
+        closing = true;
+        token = token.substring(1).trim();
+    }
+    token = token.replace(/^\|+/, '').replace(/\|+$/, '').replace(/\s*\|+\s*$/, '').trim();
+    token = token.replace(/^DSML\s*\|*\s*/i, '');
+    // Native tokens survive as text with a begin/end marker instead of a slash:
+    // `<|tool_call▁end|>` closed the call that `<|tool_call▁begin|>` opened. The marker
+    // is the only closing signal there is, so read it before it is stripped.
+    const marker = token.match(/[\u2581_\s-]*(begin|end)\s*$/i);
+    if (marker) {
+        if (marker[1].toLowerCase() === 'end') closing = true;
+        token = token.substring(0, marker.index).trim();
+    }
+    const match = token.match(/^([A-Za-z_][A-Za-z0-9_-]*)([\s\S]*)$/);
+    if (!match) return null;
+    const rawName = match[1].replace(/-/g, '_').toLowerCase();
+    let kind = null;
+    if (LOOSE_CALL_TAGS.has(rawName)) kind = 'call';
+    else if (LOOSE_WRAPPER_TAGS.has(rawName)) kind = 'wrapper';
+    else if (LOOSE_PARAM_TAGS.has(rawName)) kind = 'parameter';
+    else if (rawName === 'direct') kind = 'call';
+    if (!kind) return null;
+    const attrs = closing ? '' : match[2].trim();
+    return {
+        kind,
+        name: rawName,
+        attrs,
+        closing,
+        selfClosing: !closing && /\/\s*$/.test(attrs),
+    };
+}
+
+// Scans every tag in the text once; anything that is not one of ours is skipped whole,
+// so a `<div>` in a pasted file cannot shift the structure of a real call.
+function scanLooseTags(text) {
+    const value = String(text || '');
+    const tags = [];
+    for (let i = 0; i < value.length; i++) {
+        if (value[i] !== '<') continue;
+        let quote = null;
+        let end = -1;
+        const limit = Math.min(value.length, i + MAX_DSML_TAG_CHARS + 2);
+        for (let j = i + 1; j < limit; j++) {
+            const ch = value[j];
+            if (quote) {
+                if (ch === quote) quote = null;
+                continue;
+            }
+            if (ch === '"' || ch === "'") { quote = ch; continue; }
+            if (ch === '>') { end = j; break; }
+        }
+        if (end === -1) break;
+        const tag = classifyLooseTag(value.substring(i + 1, end));
+        if (tags.length > MAX_DSML_STRUCTURAL_TAGS) break;
+        if (tag) tags.push({ ...tag, start: i, end: end + 1 });
+        i = end;
+    }
+    return tags;
+}
+
+function looseTagValue(raw) {
+    const value = String(raw || '').trim();
+    const cdata = value.match(/^<!\[CDATA\[([\s\S]*?)\]\]>$/i);
+    return decodeDsmlValue(cdata ? cdata[1] : value);
+}
+
+function findLooseClose(tags, openIndex) {
+    const kind = tags[openIndex].kind;
+    const name = tags[openIndex].name;
+    let depth = 0;
+    for (let j = openIndex; j < tags.length; j++) {
+        const tag = tags[j];
+        if (tag.kind !== kind || tag.name !== name) continue;
+        if (tag.closing) {
+            depth--;
+            if (depth <= 0) return j;
+        } else if (!tag.selfClosing) {
+            depth++;
+        }
+    }
+    return -1;
+}
+
+// Builds one call from an opening tag, its parameters and (when there are none) a JSON body.
+function buildLooseCall(tag, params, bodyText) {
+    let name = getMarkupAttribute(tag.attrs, 'name') || '';
+    const args = {};
+    let usedParams = 0;
+    const seenNames = new Set();
+    for (const param of params) {
+        const paramName = getMarkupAttribute(param.tag.attrs, 'name');
+        if (!paramName) return null;
+        const rawValue = looseTagValue(param.value);
+        if (rawValue.length > MAX_TOOL_ARGUMENT_CHARS) return null;
+        if (!name && LOOSE_NAME_PARAMS.has(paramName.toLowerCase())) {
+            const candidate = rawValue.trim();
+            if (!/^[A-Za-z0-9_][A-Za-z0-9_.:-]{0,127}$/.test(candidate)) return null;
+            name = candidate;
+            continue;
+        }
+        if (seenNames.has(paramName)) return null;
+        seenNames.add(paramName);
+        const stringMode = getMarkupAttribute(param.tag.attrs, 'string');
+        if (stringMode && stringMode.toLowerCase() === 'false') {
+            try { args[paramName] = JSON.parse(rawValue.trim()); } catch (e) { return null; }
+        } else {
+            args[paramName] = rawValue;
+        }
+        usedParams += 1;
+    }
+    if (!name) {
+        // No name on the tag and no name parameter: the body itself may be the envelope.
+        const body = String(bodyText || '').trim();
+        if (!body) return null;
+        const objects = extractBalancedJsonObjects(body, 1);
+        if (objects.length !== 1 || body !== objects[0]) return null;
+        try { return coerceToolCallObject(JSON.parse(objects[0]), { allowBare: true }); }
+        catch (e) { return null; }
+    }
+    if (!usedParams && !String(bodyText || '').trim() && !params.length) {
+        // `<tool_call name="shell"/>` or `<invoke name="shell"></invoke>`: a real no-argument call.
+        return buildToolCall(name, {});
+    }
+    if (!String(bodyText || '').trim() && !usedParams && params.length === 0) return null;
+    return buildToolCall(name, args);
+}
+
+function listLooseToolCalls(text) {
+    const value = String(text || '');
+    if (!value || value.length > MAX_TOOL_MARKUP_CHARS) return [];
+    if (!LOOSE_MARKUP_RE.test(value)) return [];
+    const tags = scanLooseTags(value);
+    if (!tags.length) return [];
+    const calls = [];
+    const seen = new Set();
+    const frames = [];
+    for (let i = 0; i < tags.length; i++) {
+        const tag = tags[i];
+        if (tag.kind === 'call' && !tag.closing) {
+            if (tag.selfClosing) {
+                rememberToolCall(calls, seen, buildLooseCall(tag, [], ''));
+                if (calls.length >= MAX_AGENT_TOOL_CALLS) break;
+                continue;
+            }
+            frames.push({ tag, params: [] });
+            continue;
+        }
+        if (tag.kind === 'parameter' && !tag.closing && !tag.selfClosing && frames.length) {
+            const closeIndex = findLooseClose(tags, i);
+            if (closeIndex === -1) return calls;
+            frames[frames.length - 1].params.push({
+                tag,
+                value: value.substring(tag.end, tags[closeIndex].start),
+            });
+            i = closeIndex;
+            continue;
+        }
+        if (tag.kind === 'call' && tag.closing && frames.length) {
+            const frame = frames.pop();
+            rememberToolCall(calls, seen, buildLooseCall(frame.tag, frame.params, value.substring(frame.tag.end, tag.start)));
+            if (calls.length >= MAX_AGENT_TOOL_CALLS) break;
+        }
+    }
+    return calls;
+}
+
 function selectAgentToolCall(text, allowedToolNames) {
     const calls = collectAgentToolCalls(text, allowedToolNames);
     if (calls.length) return calls[0];
@@ -3283,11 +3560,11 @@ function selectAgentToolCall(text, allowedToolNames) {
     if (allowed.size > 0) return null;
     const listed = listDsmlToolCalls(text);
     const parsed = hasDsmlToolMarkup(text) ? parseDsmlToolCall(text) : null;
-    return parsed || listed[0] || null;
+    return parsed || listed[0] || listLooseToolCalls(text)[0] || null;
 }
 
 function hasDsmlToolMarkup(text) {
-    return /[|｜]+\s*DSML\s*[|｜]+|[<＜]\s*\/?\s*(?:DSML)?(?:[\w.-]+:)?(?:tool[\s_-]*calls|function[\s_-]*calls|invoke)\b/i.test(String(text || ''));
+    return LOOSE_MARKUP_RE.test(String(text || ''));
 }
 
 function rememberToolCall(calls, seen, call) {
@@ -3356,7 +3633,11 @@ function collectJsonToolCalls(text) {
 function collectAgentToolCalls(text, allowedToolNames) {
     const allowed = allowedToolNames instanceof Set ? allowedToolNames : new Set(allowedToolNames || []);
     if (!text || allowed.size === 0) return [];
-    const raw = hasDsmlToolMarkup(text) ? listDsmlToolCalls(text) : collectJsonToolCalls(text);
+    // A reply can carry both dialects at once (a JSON envelope plus a stray native block),
+    // so a markup-bearing reply is read by both readers and deduplicated by name+arguments.
+    const raw = hasDsmlToolMarkup(text)
+        ? [...listDsmlToolCalls(text), ...listLooseToolCalls(text)]
+        : collectJsonToolCalls(text);
     const calls = [];
     const seen = new Set();
     for (const call of raw) {
@@ -3368,7 +3649,9 @@ function collectAgentToolCalls(text, allowedToolNames) {
 }
 
 function looksLikeToolCallMarkup(text) {
-    return /TOOL_CALL:\s*[\w-]+|<\s*tool_call\b|[|｜]+\s*DSML\s*[|｜]+|[<＜]\s*\/?\s*(?:DSML)?(?:[\w.-]+:)?(?:tool[\s_-]*calls|function[\s_-]*calls|invoke)\b|["'](?:tool_call|tool_calls|function_call)["']\s*:/i.test(String(text || ''));
+    return /TOOL_CALL:\s*[\w-]+/.test(String(text || ''))
+        || LOOSE_MARKUP_RE.test(String(text || ''))
+        || /["'](?:tool_call|tool_calls|function_call)["']\s*:/i.test(String(text || ''));
 }
 
 function looksLikeCodeDumpInsteadOfTool(text) {
@@ -6594,6 +6877,18 @@ const server = http.createServer(async (req, res) => {
     // what this gateway can actually serve right now.
     if (req.method === 'GET' && url.pathname === '/v1/models') {
         const data = SUPPORTED_MODEL_IDS.map(id => ({ id, object: 'model', created: 1700000000, owned_by: 'deepseek-web', real_model: MODEL_CONFIGS[id].real_model, capabilities: MODEL_CONFIGS[id].capabilities }));
+        // One merged entry first: the picker defaults to it and the ids after it stay
+        // available for anything that deliberately pins a provider.
+        data.unshift({
+            id: MERGED_MODEL_ID,
+            object: 'model',
+            created: 1700000000,
+            owned_by: 'seek',
+            real_model: 'seek (DeepSeek · Grok · Claude, routed by task)',
+            description: MERGED_MODEL_DESCRIPTION,
+            routing: MERGED_ROUTES,
+            capabilities: { reasoning: true, web_search: true, files: true, vision: true },
+        });
         if (hasClaudeAccount()) {
             for (const [id, cfg] of Object.entries(CLAUDE_MODEL_CONFIGS)) {
                 data.push({ id, object: 'model', created: 1700000000, owned_by: 'claude-web', real_model: cfg.real_model, capabilities: cfg.capabilities });
@@ -6612,6 +6907,19 @@ const server = http.createServer(async (req, res) => {
     // Full mapping, including Web models observed but not currently usable through the direct API.
     if (req.method === 'GET' && (url.pathname === '/v1/model-capabilities' || url.pathname === '/api/model-capabilities')) {
         const data = { ...ALL_MODEL_CAPABILITIES };
+        data[MERGED_MODEL_ID] = {
+            id: MERGED_MODEL_ID,
+            real_model: 'seek (DeepSeek · Grok · Claude, routed by task)',
+            description: MERGED_MODEL_DESCRIPTION,
+            model_type: 'merged',
+            provider: 'seek',
+            thinking_enabled: true,
+            search_enabled: true,
+            capabilities: { reasoning: true, web_search: true, files: true, vision: true },
+            supported: true,
+            unavailable_reason: null,
+            routing: MERGED_ROUTES,
+        };
         if (hasClaudeAccount()) {
             for (const [id, cfg] of Object.entries(CLAUDE_MODEL_CONFIGS)) {
                 data[id] = { id, real_model: cfg.real_model, model_type: cfg.model_type, provider: cfg.provider, thinking_enabled: cfg.thinking_enabled, search_enabled: cfg.search_enabled, capabilities: cfg.capabilities, supported: cfg.supported, unavailable_reason: null };
@@ -6776,6 +7084,13 @@ const server = http.createServer(async (req, res) => {
             const rawParams = JSON.parse(body || '{}');
             const params = normalizeApiParams(rawParams, apiMode);
             const messages = params.messages || [];
+            // `seek` is one model id: classify the turn, then route it to the upstream that
+            // fits. Everything downstream sees a concrete model id, so tool handling, the
+            // bridge and the dashboard keep working unchanged.
+            const mergedRoute = applyMergedModelRoute(params, messages, {
+                pinnedAccountId: String(req.headers['x-account-id'] || '').trim(),
+            });
+            if (mergedRoute) console.log(`[route] seek → ${mergedRoute.role} on ${mergedRoute.provider}/${mergedRoute.model}`);
             const imageContext = { inputs: extractImageInputs(messages), refFileIds: [] };
             const stream = params.stream === true;
             logRow.stream = stream;
@@ -7575,6 +7890,13 @@ const server = http.createServer(async (req, res) => {
                                 ? 'Model dumped source code instead of a tool request'
                                 : 'Model stopped after a tool result without a next tool call')));
                 console.log(`${agentTag} ${reason} (${fullContent.length} chars). Retrying with stricter prompt on the same session...`);
+                // SEEK_DEBUG_MARKUP=1 puts the head of the rejected reply in the log. That is
+                // the only way to tell a new tag dialect from a truncated call without
+                // re-running the turn, so it is opt-in rather than always on.
+                if (isTruthy(process.env.SEEK_DEBUG_MARKUP)) {
+                    const preview = fullContent.replace(/\s+/g, ' ').slice(0, 800);
+                    console.log(`${agentTag} [markup] ${preview}`);
+                }
                 const strictPrompt = shouldRepairNoTools
                     ? noToolsRepairPrompt()
                     : (shouldRepairNative
@@ -8111,7 +8433,20 @@ async function main() {
     }
     const startup = await showStartupMenu();
     if (!startup.start) process.exit(0);
+    // A loopback gateway binds the IPv6 wildcard, which on Linux also accepts IPv4 — so
+    // `localhost` (::1) and `127.0.0.1` both reach it. Before this, a client that resolved
+    // localhost to ::1 got ECONNREFUSED from a server that was running and healthy, which
+    // reads as "the gateway is down" in the extension, the dashboard and OpenCode.
+    const listenHost = isLoopbackHost(HOST) ? '::' : HOST;
+    let fellBackToIpv4 = false;
     server.on('error', (err) => {
+        if (listenHost !== HOST && !fellBackToIpv4
+            && (err.code === 'EAFNOSUPPORT' || err.code === 'EADDRNOTAVAIL' || err.code === 'EPROTO')) {
+            fellBackToIpv4 = true;
+            console.warn(`[DS-API] IPv6 loopback is unavailable (${err.code}); binding ${HOST} only.`);
+            server.listen(PORT, HOST);
+            return;
+        }
         if (err.code === 'EADDRINUSE') console.error(`[DS-API] FATAL: port ${PORT} already in use. Set PORT=<other> or stop the other instance.`);
         else console.error('[DS-API] server error:', err);
         process.exit(1);
@@ -8120,13 +8455,25 @@ async function main() {
     setInterval(sweepIdleSessions, 10 * 60 * 1000).unref();
     // A login that DeepSeek revokes looks healthy until it is asked. Ask on a timer.
     startAccountHealthLoop();
-    server.listen(PORT, HOST, () => {
+    server.listen(PORT, listenHost, () => {
         // ── startup status board ────────────────────────────────────────────
         const R = '\x1b[0m', B = '\x1b[1m', D = '\x1b[2m';
         const CYN = '\x1b[96m', GRN = '\x1b[92m', YLW = '\x1b[93m', GRY = '\x1b[38;2;140;140;140m';
         const W = Math.max(60, process.stdout.columns || 80);
         const ruleWidth = Math.min(55, W - 4);
         const pad = ' '.repeat(Math.max(0, Math.floor((W - ruleWidth) / 2)));
+
+        // The launcher reads this to replace the running instance instead of failing on
+        // EADDRINUSE. Written only after a successful bind, so a stale file can never
+        // point at a process that never listened.
+        const pidFile = path.join(os.homedir(), '.seek', 'gateway.pid');
+        try {
+            fs.mkdirSync(path.dirname(pidFile), { recursive: true });
+            fs.writeFileSync(pidFile, String(process.pid));
+            process.on('exit', () => {
+                try { if (fs.readFileSync(pidFile, 'utf8').trim() === String(process.pid)) fs.unlinkSync(pidFile); } catch (e) { /* already gone */ }
+            });
+        } catch (e) { /* a read-only home must not stop the gateway */ }
 
         const url = `http://${HOST}:${PORT}`;
         const dashUrl = dashboardUrl(HOST, PORT);
@@ -8236,10 +8583,18 @@ module.exports = {
         parseToolCall,
         repairTruncatedJsonEnvelope,
         listDsmlToolCalls,
+        listLooseToolCalls,
+        scanLooseTags,
+        classifyLooseTag,
+        hasDsmlToolMarkup,
         collectAgentToolCalls,
         buildToolCallResponse,
         selectAgentToolCall,
         parseDsmlToolCall,
+        isMergedModelId,
+        mergedRoleForRequest,
+        applyMergedModelRoute,
+        mergedRoutes: MERGED_ROUTES,
         looksLikeToolCallMarkup,
         looksLikeCodeDumpInsteadOfTool,
         isDeepSeekNativeTool,

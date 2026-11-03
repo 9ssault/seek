@@ -219,7 +219,7 @@ function showReloadWarning() {
   showCallout(
     'error',
     'Reload the extension',
-    `${detail} Open chrome://extensions, press Reload on this extension, then reopen the popup — an older worker cannot collect a claude.ai login.`
+    `${detail} Open chrome://extensions, press Reload on this extension, then reopen the popup — an older worker cannot collect a claude.ai, grok.com or DeepSeek login.`
   );
 }
 

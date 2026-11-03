@@ -31,6 +31,9 @@
   };
 
   const nameOf = (a) => a.name || a.id;
+  // One label for all three upstreams, so a Grok login never renders as DeepSeek.
+  const providerLabel = (p) => (p === 'claude' ? 'Claude' : p === 'grok' ? 'Grok' : 'DeepSeek');
+  const providerNoun = (p) => (p === 'claude' ? 'claude.ai cookie jar' : p === 'grok' ? 'grok.com cookie jar' : 'session');
 
   // ---------------------------------------------------------------- actions
   async function action(account, kind, trigger) {
@@ -153,7 +156,10 @@
     items.push({ label: 'Refresh token', icon: 'refresh', disabled: !account.credentials?.token, reason: 'No token', run: () => action(account, 'refresh') });
     // A rejected login is repaired by pasting a fresh capture over it. The import
     // matches on the name, so the id, usage and history stay with the same row.
-    items.push({ label: account.provider === 'claude' ? 'Recapture Claude login…' : 'Recapture session…', icon: 'reload', run: () => openAdd(trigger, { account }) });
+    const recaptureLabel = account.provider === 'claude' ? 'Recapture Claude login…'
+      : account.provider === 'grok' ? 'Recapture Grok login…'
+        : 'Recapture session…';
+    items.push({ label: recaptureLabel, icon: 'reload', run: () => openAdd(trigger, { account }) });
     if (account.disabled_by !== 'file') items.push({ label: 'Disable in file', icon: 'lock', run: () => action(account, 'file-disable') });
     items.push('sep');
     items.push({ label: 'View requests', icon: 'requests', run: () => F.navigate('requests', '', { account: account.id }) });
@@ -205,7 +211,7 @@
     return a.status === st.filter;
   }
 
-  // What the two upstreams did for each other, and whether any reply stayed a refusal.
+  // What the upstreams did for each other, and whether any reply stayed a refusal.
   // Everything here is computed from the request log the page already holds, so it needs
   // no extra endpoint: bridge and refusal are properties of the recorded requests.
   function aiCard(data) {
@@ -219,7 +225,7 @@
     let bridged = 0;
     let refused = 0;
     for (const r of rows) {
-      const servedBy = (F.accountById(r.account) && F.accountById(r.account).provider === 'claude') ? 'Claude' : 'DeepSeek';
+      const servedBy = providerLabel(F.accountById(r.account) && F.accountById(r.account).provider);
       if (r.bridged_from) {
         bridged += 1;
         const key = `${r.bridged_from} → ${servedBy}`;
@@ -241,7 +247,7 @@
       h('span', { class: 'ai-metric-label', text: label }),
       h('span', { class: 'ai-metric-value', text: value }));
     const providerLine = Object.entries(byProvider)
-      .map(([p, own]) => `${p === 'claude' ? 'Claude' : 'DeepSeek'} ${own.can_serve}/${own.total}`)
+      .map(([p, own]) => `${providerLabel(p)} ${own.can_serve}/${own.total}`)
       .join(' · ') || 'No logins loaded';
     const last = data.bridge && data.bridge.last;
     return h('section', { class: 'ai-card', 'aria-label': 'Upstream routing' },
@@ -266,9 +272,10 @@
     filterInput.addEventListener('input', () => { st.query = filterInput.value.trim(); render(); });
     const chips = F.segmented('Account state', FILTERS, st.filter, (v) => { st.filter = v; render(); });
     const providerSelect = F.select('Upstream', [
-      { value: 'all', label: 'Both upstreams' },
+      { value: 'all', label: 'All upstreams' },
       { value: 'deepseek', label: 'DeepSeek' },
       { value: 'claude', label: 'Claude' },
+      { value: 'grok', label: 'Grok' },
     ], st.provider, (v) => { st.provider = v; render(); });
     const aiHost = h('div', { class: 'ai-host' });
     const count = h('p', { class: 'meta count' });
@@ -340,7 +347,7 @@
     const hero = st.els.hero;
     if (!data) { hero.set(F.store.error ? 'Accounts unavailable.' : 'Loading accounts…', F.store.error ? F.errorText(F.store.error) : '', F.store.error ? 'crit' : null); return; }
     const all = data.accounts;
-    if (!all.length) { hero.set('No accounts yet.', 'Add a DeepSeek login to start serving requests.'); return; }
+    if (!all.length) { hero.set('No accounts yet.', 'Add a DeepSeek, Claude or Grok login to start serving requests.'); return; }
     const by = (st$) => all.filter(a => a.status === st$).length;
     const parts = [[by('ready'), 'ready'], [by('busy'), 'busy'], [by('cooldown'), 'cooling down'], [by('disabled'), 'paused'], [by('no_credentials'), 'without credentials']]
       .filter(([n]) => n).map(([n, l]) => `${n} ${l}`);
@@ -349,7 +356,7 @@
     const perProvider = Object.entries(data.pool.by_provider || {});
     if (perProvider.length > 1) {
       parts.push(perProvider
-        .map(([provider, own]) => `${own.can_serve}/${own.total} ${provider === 'claude' ? 'Claude' : 'DeepSeek'}`)
+        .map(([provider, own]) => `${own.can_serve}/${own.total} ${providerLabel(provider)}`)
         .join(' · '));
     }
     // Answers one upstream gave for the other: silent until it happens, then worth seeing.
@@ -446,7 +453,7 @@
       h('td', { class: 'cell-state' }, stateCell(a), pending ? h('span', { class: 'row-pending' }, h('span', { class: 'spinner', 'aria-hidden': 'true' }), pending) : null),
       h('td', { class: 'cell-account' },
         h('span', { class: 'acct-name', text: nameOf(a) }),
-        h('span', { class: 'chip provider-chip', text: a.provider === 'claude' ? 'Claude' : 'DeepSeek' }),
+        h('span', { class: 'chip provider-chip', text: providerLabel(a.provider) }),
         a.name && a.name !== a.id ? h('span', { class: 'mono-id acct-id', text: a.id }) : null,
         h('span', { class: 'cell-mobile-meta meta', text: `${a.failures} / ${a.total_failures} failures · ${fmt.compact(tokens(a))} tokens ≈` })),
       h('td', { class: 'num', text: `${a.failures} / ${a.total_failures}` }),
@@ -479,7 +486,7 @@
     const add = F.btn('Add account', { kind: 'primary', icon: 'plus', onclick: (e) => openAdd(e.currentTarget) });
     return h('div', { class: 'empty' },
       h('p', { class: 'empty-title', text: 'No accounts are loaded.' }),
-      h('p', { class: 'empty-text', text: 'Add a DeepSeek session or a Claude cookie jar exported by the seek Auth Exporter extension, or import one from a terminal and reload:' }),
+      h('p', { class: 'empty-text', text: 'Add a DeepSeek session, or a Claude or Grok cookie jar exported by the seek Auth Exporter extension, or import one from a terminal and reload:' }),
       F.codeLine('npm run auth:import'),
       h('div', { class: 'empty-actions' }, add, F.btn('Reload from disk', { icon: 'reload', onclick: (e) => reload(e.currentTarget) })));
   }
@@ -528,7 +535,7 @@
     const credFacts = [fact('Upstream', upstream)];
     if (jarOnly) {
       credFacts.push(fact(
-        a.provider === 'claude' ? 'Session cookie' : 'Session cookie',
+        'Session cookie',
         jarParts
           ? okMark(`present · ${fmt.int(jarParts)} cookie part${jarParts === 1 ? '' : 's'}`)
           : h('span', { class: 'is-crit-text', text: 'missing — re-add this login' }),
@@ -598,7 +605,9 @@
     stateBox.append(h('div', { class: 'insp-row' },
       h('p', { class: 'meta', text: a.provider === 'claude'
         ? 'Rejected or rotated out? A fresh claude.ai capture replaces this jar. The id and its history stay.'
-        : 'Rejected or expired? A fresh session replaces this token. The id and its history stay.' }),
+        : a.provider === 'grok'
+          ? 'Rejected or rotated out? A fresh grok.com capture replaces this jar. The id and its history stay.'
+          : 'Rejected or expired? A fresh session replaces this token. The id and its history stay.' }),
       F.btn('Recapture…', { size: 'sm', icon: 'reload', 'data-focus-key': 'recapture', onclick: (e) => openAdd(e.currentTarget, { account: a }) })));
     body.append(section('Routing', stateBox));
 
@@ -704,9 +713,9 @@
     return name.toLowerCase().replace(/[^a-z0-9._-]+/g, '-').replace(/^[-.]+|[-.]+$/g, '').slice(0, 48);
   }
 
-  // Mirrors scripts/auth_import.js normalizeAuth and lib/claude-web.js detectProvider so
-  // the dialog accepts both shapes: a DeepSeek session (token + cookie) and a Claude
-  // cookie jar (sessionKey, no token).
+  // Mirrors scripts/auth_import.js normalizeAuth and lib/claude-web.js / lib/grok-web.js
+  // detectProvider so the dialog accepts all three shapes: a DeepSeek session (token +
+  // cookie), a Claude cookie jar (sessionKey, no token) and a Grok cookie jar (`sso`).
   function cookiesFrom(obj) {
     if (typeof obj.cookie === 'string') return obj.cookie.split(';').map(s => s.trim()).filter(Boolean);
     if (typeof obj.cookies === 'string') return obj.cookies.split(';').map(s => s.trim()).filter(Boolean);
@@ -733,20 +742,32 @@
     const token = String(obj.token || obj.access_token || obj.accessToken || obj.auth_token || '').trim().replace(/^Bearer\s+/i, '');
     const declared = String(obj.provider || obj.api || '').toLowerCase().trim();
     // Same rule the server uses: a declared provider wins, otherwise a jar carrying
-    // sessionKey and no DeepSeek token is Claude's shape.
-    const claude = declared === 'claude' || declared === 'anthropic' || (!token && names.has('sessionKey'));
+    // sessionKey and no DeepSeek token is Claude's shape, and one carrying `sso`
+    // (grok.com's session cookie) or an X session's `auth_token` is Grok's.
+    const grokJar = names.has('sso') || names.has('sso-rw') || names.has('auth_token');
+    const claude = declared === 'claude' || declared === 'anthropic'
+      || (!token && names.has('sessionKey'));
+    const grok = !claude && (declared === 'grok' || declared === 'xai' || declared === 'x.ai'
+      || (!token && grokJar));
+    const provider = claude ? 'claude' : grok ? 'grok' : undefined;
+    const grokOk = grokJar;
     return {
       obj,
-      provider: claude ? 'claude' : undefined,
+      provider,
       claude,
+      grok,
+      grokOk,
       token: Boolean(token),
       cookieParts: parts.length,
       sessionKey: names.has('sessionKey'),
+      sso: names.has('sso') || names.has('sso-rw'),
       cfClearance: names.has('cf_clearance'),
       hifDliq: Boolean(obj.hif_dliq || obj['x-hif-dliq']),
       hifLeim: Boolean(obj.hif_leim || obj['x-hif-leim']),
       wasm: Boolean(obj.wasmUrl || obj.wasm_url),
-      ok: claude ? names.has('sessionKey') : Boolean(token) && parts.length > 0,
+      ok: claude ? names.has('sessionKey')
+        : grok ? grokOk
+          : Boolean(token) && parts.length > 0,
     };
   }
 
@@ -763,7 +784,7 @@
     const fileInput = h('input', { type: 'file', accept: 'application/json,.json', class: 'sr-only', id: 'add-file' });
     const hint = h('div', { class: 'source-empty' },
       h('span', { class: 'source-empty-icon' }, F.icon('files')),
-      h('p', { class: 'source-empty-title', text: 'Drop deepseek-auth.json or claude-auth.json' }),
+      h('p', { class: 'source-empty-title', text: 'Drop deepseek-auth.json, claude-auth.json or grok-auth.json' }),
       h('p', { class: 'source-empty-text' }, h('label', { class: 'source-pick', for: 'add-file', text: 'Choose file' })));
     const fileName = h('span', { class: 'source-file-name' });
     const fileMeta = h('span', { class: 'source-file-meta' });
@@ -784,15 +805,15 @@
     const providerButtons = {};
     const providerRow = h('div', { class: 'add-provider', role: 'group', 'aria-label': 'Provider' });
     const setChosen = (next) => {
-      chosen = next === 'claude' ? 'claude' : 'deepseek';
+      chosen = next === 'claude' ? 'claude' : next === 'grok' ? 'grok' : 'deepseek';
       for (const [key, btn] of Object.entries(providerButtons)) {
         btn.classList.toggle('is-active', key === chosen);
         btn.setAttribute('aria-pressed', String(key === chosen));
       }
       renderSteps(chosen);
     };
-    for (const p of ['deepseek', 'claude']) {
-      providerButtons[p] = F.btn(p === 'claude' ? 'Claude' : 'DeepSeek', {
+    for (const p of ['deepseek', 'claude', 'grok']) {
+      providerButtons[p] = F.btn(providerLabel(p), {
         size: 'sm',
         onclick: () => { setChosen(p); validate(); },
       });
@@ -823,6 +844,12 @@
           chip(state.cookieParts ? `Cookies · ${state.cookieParts}` : 'Cookies', state.cookieParts > 0, false, state.cookieParts ? `${state.cookieParts} cookie${state.cookieParts === 1 ? '' : 's'} in the jar` : 'No cookies in the jar'),
           chip('cf_clearance', state.cfClearance, true, state.cfClearance ? 'Cloudflare cookie present' : 'cf_clearance not found (claude.ai may challenge the login)'));
         showError(state.sessionKey ? '' : 'This is a Claude cookie jar but it has no sessionKey. Sign in on claude.ai, click Read current tab, then Download again.');
+      } else if (state.grok) {
+        chips.append(
+          chip(state.sso ? 'sso' : 'sso missing', Boolean(state.sso), false, state.sso ? 'The cookie grok.com authenticates with' : 'A grok.com jar always carries sso (an X session carries auth_token)'),
+          chip(state.cookieParts ? `Cookies · ${state.cookieParts}` : 'Cookies', state.cookieParts > 0, false, state.cookieParts ? `${state.cookieParts} cookie${state.cookieParts === 1 ? '' : 's'} in the jar` : 'No cookies in the jar'),
+          chip('cf_clearance', state.cfClearance, true, state.cfClearance ? 'Cloudflare cookie present' : 'cf_clearance not found (grok.com may challenge the login)'));
+        showError(state.grokOk ? '' : 'This is a Grok cookie jar but it has no sso cookie. Sign in on grok.com, click Read current tab, then Download again.');
       } else {
         chips.append(
           chip('Token', state.token, false, state.token ? 'Token found' : 'Token missing'),
@@ -833,22 +860,24 @@
         showError(missing.length ? `This file has no ${missing.join(' or ')} field. Sign in on chat.deepseek.com, click Read current tab, then Download again.` : '');
       }
       // A recognised file decides the provider; an empty dropzone keeps the choice above.
-      if (!state.empty && !state.parseError) setChosen(state.claude ? 'claude' : 'deepseek');
+      if (!state.empty && !state.parseError) setChosen(state.provider || 'deepseek');
       else setChosen(chosen);
       const name = nameInput.value.trim();
       const slug = slugFor(name);
       const replaces = recapture && name.toLowerCase() === recaptureName.toLowerCase();
       nameHelp.textContent = !name ? '' : replaces
-        ? `Replaces the stored ${recapture.provider === 'claude' ? 'claude.ai cookie jar' : 'session'} for ${recapture.id}. The id and its history stay.`
+        ? `Replaces the stored ${providerNoun(recapture.provider)} for ${recapture.id}. The id and its history stay.`
         : slug ? `Saved as accounts/${slug}.json` : 'Saved as accounts/account-N.json';
-      const ready = (chosen === 'claude' ? state.sessionKey : state.ok) && name.length > 0;
+      const ready = (chosen === 'claude' ? state.sessionKey : chosen === 'grok' ? state.grokOk : state.ok) && name.length > 0;
       submit.setAttribute('aria-disabled', String(!ready));
       submit.setAttribute('data-tip', ready ? '' : chosen === 'claude'
         ? (state.sessionKey ? 'Enter a name' : 'Drop a claude.ai cookie jar (sessionKey) first')
-        : (state.ok ? 'Enter a name' : 'Drop a valid deepseek-auth.json first'));
+        : chosen === 'grok'
+          ? (state.grokOk ? 'Enter a name' : 'Drop a grok.com cookie jar (sso) first')
+          : (state.ok ? 'Enter a name' : 'Drop a valid deepseek-auth.json first'));
     };
     // Anything that is not the auth file gets pointed back at the file to look for.
-    const FIND_FILE = 'Find deepseek-auth.json or claude-auth.json, the file the extension downloaded (usually in Downloads), and drop that.';
+    const FIND_FILE = 'Find deepseek-auth.json, claude-auth.json or grok-auth.json, the file the extension downloaded (usually in Downloads), and drop that.';
     const reject = (text) => { raw = ''; validate(); showError(`${text} ${FIND_FILE}`); };
     const loadFile = (file) => {
       if (!file) return;
@@ -886,7 +915,7 @@
       formErr.hidden = true;
       F.setPending(submit, 'Adding…');
       try {
-        const res = await F.api('POST', '/admin/accounts/import', { body: { name: nameInput.value.trim(), provider: chosen === 'claude' ? 'claude' : undefined, auth: state.obj } });
+        const res = await F.api('POST', '/admin/accounts/import', { body: { name: nameInput.value.trim(), provider: chosen === 'deepseek' ? undefined : chosen, auth: state.obj } });
         F.applyAccountUpdate(res);
         const acc = res.account;
         raw = '';
@@ -927,17 +956,20 @@
     const addTitle = h('h2', { class: 'add-title', id: 'add-title', text: 'Add an account' });
     const addSteps = h('ol', { class: 'add-steps', 'aria-label': 'Where the file comes from' });
     const installStep = () => step(1, 'Install seek Auth Exporter', [h('span', { text: 'In ' }), code('chrome://extensions'), h('span', { text: ' turn on Developer mode, then Load unpacked → the ' }), code('chrome-extension'), h('span', { text: ' folder of FreeDeepseekAPI' })]);
-    // The two providers need different sign-in pages and different files, so the guide
-    // follows whatever the dropped file turned out to be.
+    // Each upstream needs its own sign-in page and file, so the guide follows
+    // whatever provider the dropped file turned out to be.
     const renderSteps = (provider) => {
-      const claude = provider === 'claude';
-      addTitle.textContent = claude ? 'Add a Claude account' : 'Add a DeepSeek account';
+      const jar = provider === 'claude' || provider === 'grok';
+      addTitle.textContent = `Add a ${providerLabel(provider)} account`;
+      const readStep = provider === 'claude'
+        ? [h('span', { text: 'On a signed-in claude.ai tab, click ' }), h('strong', { text: 'Read current tab' }), h('span', { text: '. Claude needs no token — only the cookie jar.' })]
+        : provider === 'grok'
+          ? [h('span', { text: 'On a signed-in grok.com (or X) tab, click ' }), h('strong', { text: 'Read current tab' }), h('span', { text: '. Grok needs no token — only the sso cookie jar.' })]
+          : [h('span', { text: 'On a signed-in chat.deepseek.com tab, click ' }), h('strong', { text: 'Read current tab' })];
       addSteps.replaceChildren(
         installStep(),
-        step(2, 'Read your session', claude
-          ? [h('span', { text: 'On a signed-in claude.ai tab, click ' }), h('strong', { text: 'Read current tab' }), h('span', { text: '. Claude needs no token — only the cookie jar.' })]
-          : [h('span', { text: 'On a signed-in chat.deepseek.com tab, click ' }), h('strong', { text: 'Read current tab' })]),
-        step(3, 'Bring the file here', [h('span', { text: 'Click ' }), h('strong', { text: 'Download' }), h('span', { text: `, then drop ${claude ? 'claude-auth.json' : 'deepseek-auth.json'} into Auth file` })]));
+        step(2, 'Read your session', readStep),
+        step(3, 'Bring the file here', [h('span', { text: 'Click ' }), h('strong', { text: 'Download' }), h('span', { text: `, then drop ${jar ? `${provider}-auth.json` : 'deepseek-auth.json'} into Auth file` })]));
     };
     // Where the file comes from, over whale sharks rising to the surface (MEDIA.md); the form on the right.
     const visual = h('aside', { class: 'add-visual' },

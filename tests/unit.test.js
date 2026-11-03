@@ -2040,7 +2040,9 @@ test('one-click agent setup adds opt-in providers without replacing native defau
   assert.equal(opencode.permission.websearch, 'deny');
   assert.equal(opencode.provider.freedeepseek.name, 'seek');
   assert.equal(opencode.provider.freedeepseek.models['deepseek-v4-flash'].name, 'seek Flash + web');
-  assert.deepEqual(Object.keys(opencode.provider.freedeepseek.models), ['deepseek-v4-flash', 'deepseek-v4-flash-thinking', 'deepseek-v4-flash-nosearch', 'deepseek-v4-flash-thinking-nosearch']);
+  // One merged id first (DeepSeek · Grok · Claude, routed by task), then the explicit
+  // DeepSeek variants for anyone who wants to pin one.
+  assert.deepEqual(Object.keys(opencode.provider.freedeepseek.models), ['seek', 'deepseek-v4-flash', 'deepseek-v4-flash-thinking', 'deepseek-v4-flash-nosearch', 'deepseek-v4-flash-thinking-nosearch']);
   assert.equal(opencode.provider.freedeepseek.models['deepseek-v4-flash-thinking'].name, 'seek Flash Thinking + web');
   // The proxy trims one upstream prompt to DEEPSEEK_MAX_PROMPT_CHARS (120k chars),
   // so the advertised window is that budget in tokens, not 1M.

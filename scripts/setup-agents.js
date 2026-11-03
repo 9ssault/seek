@@ -31,16 +31,70 @@ const LEGACY_SEARCH_MODELS = {
   'deepseek-v4-flash-search': 'deepseek-v4-flash',
   'deepseek-v4-flash-thinking-search': 'deepseek-v4-flash-thinking',
 };
+// The other two upstreams the gateway serves. They need no separate base URL or key:
+// the same provider block reaches them, and a model id is the whole instruction. The
+// `unavailable` ids exist upstream but are not served on a standard plan, so an agent
+// naming one still reaches the gateway's own fallback instead of failing here.
+const UPSTREAM_MODELS = [
+  'claude-sonnet-4-6',
+  'claude-haiku-4-5',
+  'claude-sonnet-4-5',
+  'claude-opus-4-1',
+  'claude-opus-4-6',
+  'grok-3-reasoning',
+  'grok-3-mini-companion',
+  'grok-3',
+  'grok-4',
+  'grok-4-fast',
+  'grok-code-fast-1',
+];
+// One model id for all three upstreams. The gateway classifies the turn and routes it:
+// DeepSeek thinks and writes code, Grok is the second coding brain, Claude audits. A
+// picker that lists fifteen vendor ids makes the operator choose a vendor per request,
+// which is the thing this id exists to remove.
+const MERGED_MODEL = 'seek';
+// Selecting from this list, in a flag or a picker, is how a config names an upstream.
+// VALID_MODELS stays the servable DeepSeek set because the Codex catalog and the
+// dashboard's model list key off it.
+const SELECTABLE_MODELS = [MERGED_MODEL, ...VALID_MODELS, ...UPSTREAM_MODELS];
+// What an agent's model picker shows: the merged id first, then the explicit DeepSeek
+// variants for anyone who wants to pin one. Vendor ids stay selectable by flag.
+const PICKER_MODELS = [MERGED_MODEL, ...VALID_MODELS];
+// Which ids think before they answer. The gateway sets the flag itself; the agents only
+// use this to show a reasoning hint next to a model in their own pickers.
+const THINKING_MODELS = new Set([
+  'deepseek-v4-flash-thinking',
+  'deepseek-v4-flash-thinking-nosearch',
+  'claude-sonnet-4-6',
+  'claude-sonnet-4-5',
+  'claude-opus-4-1',
+  'claude-opus-4-6',
+  'grok-3-reasoning',
+  'grok-4',
+]);
+function isThinkingModel(id) { return THINKING_MODELS.has(id) || /thinking/.test(String(id || '')); }
 const DEFAULT_MODEL = 'deepseek-v4-flash';
 const CODEX_BASE_INSTRUCTIONS = 'You are a coding agent. Follow developer instructions and use local tools when needed. Local tools are JSON, and several independent calls may be one tool_calls array.';
 const CODEX_NATIVE_SEARCH_INSTRUCTIONS = 'Do not use the Codex/harness web search tool. DeepSeek native Web Search is enabled — use it for live web data and report the findings.';
 // Each variant gets its own name, under the product's own name. A bare upstream model
 // name in the picker made the agent introduce itself as somebody else's model.
 const OPENCODE_MODEL_NAMES = {
+  'seek': 'seek — DeepSeek · Grok · Claude',
   'deepseek-v4-flash': 'seek Flash + web',
   'deepseek-v4-flash-thinking': 'seek Flash Thinking + web',
   'deepseek-v4-flash-nosearch': 'seek Flash',
   'deepseek-v4-flash-thinking-nosearch': 'seek Flash Thinking',
+  'claude-sonnet-4-6': 'Claude Sonnet 4.6',
+  'claude-haiku-4-5': 'Claude Haiku 4.5',
+  'claude-sonnet-4-5': 'Claude Sonnet 4.5',
+  'claude-opus-4-1': 'Claude Opus 4.1',
+  'claude-opus-4-6': 'Claude Opus 4.6',
+  'grok-3-reasoning': 'Grok 3 Reasoning',
+  'grok-3-mini-companion': 'Grok 3 Mini',
+  'grok-3': 'Grok 3',
+  'grok-4': 'Grok 4',
+  'grok-4-fast': 'Grok 4 Fast',
+  'grok-code-fast-1': 'Grok Code Fast 1',
 };
 const OPENCODE_PROVIDER_LABEL = 'seek';
 // The proxy cuts one upstream prompt to DEEPSEEK_MAX_PROMPT_CHARS characters
@@ -199,11 +253,11 @@ function fileReader(ctx, { salt = crypto.randomBytes(16) } = {}) {
 
 function normalizeModel(id) {
   if (typeof id !== 'string' || !id.trim()) {
-    throw new SetupError('invalid_option', `model is required. Use one of: ${VALID_MODELS.join(', ')}`, { field: 'model' });
+    throw new SetupError('invalid_option', `model is required. Use one of: ${SELECTABLE_MODELS.join(', ')}`, { field: 'model' });
   }
   const model = LEGACY_SEARCH_MODELS[id] || id;
-  if (!VALID_MODELS.includes(model)) {
-    throw new SetupError('invalid_option', `Unknown model ${id}. Use one of: ${VALID_MODELS.join(', ')}`, { field: 'model' });
+  if (!SELECTABLE_MODELS.includes(model)) {
+    throw new SetupError('invalid_option', `Unknown model ${id}. Use one of: ${SELECTABLE_MODELS.join(', ')}`, { field: 'model' });
   }
   return model;
 }
@@ -236,7 +290,7 @@ function parseArgs(argv) {
   if (hasArg(args, '--help', '-h')) return { help: true };
   const requestedModel = argValue(args, '--model', 'deepseek-v4-flash');
   const model = LEGACY_SEARCH_MODELS[requestedModel] || requestedModel;
-  if (!VALID_MODELS.includes(model)) die(`Unknown --model ${model}. Use: ${VALID_MODELS.join(', ')}`);
+  if (!SELECTABLE_MODELS.includes(model)) die(`Unknown --model ${model}. Use: ${SELECTABLE_MODELS.join(', ')}`);
   const mode = argValue(args, '--mode', 'add');
   if (!['add', 'replace'].includes(mode)) die('Unknown --mode. Use: add, replace');
   let targets = [];
@@ -276,6 +330,8 @@ Options:
   --target    ${VALID_TARGETS.join(' | ')} | comma-list
   --all       every target
   --model     ${VALID_MODELS.join(' | ')}
+              ${UPSTREAM_MODELS.join(' | ')}
+              (Claude and Grok ids reach their own upstream through the same proxy)
   --mode      add (default) | replace
   --base-url  proxy origin (default ${defaultBaseUrl()})
   --api-key   PROXY_API_KEY or "local"
@@ -871,7 +927,7 @@ const TARGETS = {
     effects: [
       "Turns off OpenCode's own web search and web fetch tools for every model, and denies them in permissions.",
       `Advertises a ${HONEST_CONTEXT_TOKENS}-token context window — the size the proxy really serves — instead of 1M, so OpenCode compacts before the proxy has to cut the prompt.`,
-      'Names each variant in the picker (Flash / Thinking / + search) instead of four identical rows.',
+      'Names each variant in the picker (Flash / Thinking / + search, then the Claude and Grok ids) instead of identical rows.',
       'Resizes attached images to at most 2000 × 2000 px for every model.',
       'Adds a FreeDeepseekAPI section to ~/.config/opencode/AGENTS.md, which every OpenCode model reads.',
       'If the default model is already a freedeepseek/ model, sets it to freedeepseek/deepseek-v4-flash-thinking.',
@@ -880,11 +936,11 @@ const TARGETS = {
     plan(opts, h) {
       const config = planJson(h, 'config', (cfg) => {
         const models = {};
-        for (const id of VALID_MODELS) {
+        for (const id of PICKER_MODELS) {
           models[id] = {
             name: OPENCODE_MODEL_NAMES[id] || id,
             attachment: true,
-            reasoning: id.includes('thinking'),
+            reasoning: isThinkingModel(id),
             tool_call: true,
             modalities: { input: ['text', 'image'], output: ['text'] },
             limit: { context: HONEST_CONTEXT_TOKENS, output: 8192 },
@@ -982,10 +1038,10 @@ const TARGETS = {
     usage: pickerUsage('OpenClaw'),
     plan(opts, h) {
       return [planJson(h, 'config', (cfg) => {
-        const models = VALID_MODELS.map(id => ({
+        const models = PICKER_MODELS.map(id => ({
           id,
-          name: id,
-          reasoning: id.includes('thinking'),
+          name: OPENCODE_MODEL_NAMES[id] || id,
+          reasoning: isThinkingModel(id),
           input: ['text', 'image'],
           cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
           contextWindow: 128000,
@@ -2181,7 +2237,7 @@ async function interactive(opts) {
           lang: langRef.current,
           subtitle: t(langRef.current, 'chooseModel'),
           status: [{ ok: true, label: t(langRef.current, 'selected'), value: selected.join(', ') }],
-          items: VALID_MODELS.map(model => ({ id: model, label: model })),
+          items: PICKER_MODELS.map(model => ({ id: model, label: OPENCODE_MODEL_NAMES[model] || model })),
         }),
         setLang,
         { cancelId: 'back' },
@@ -2447,6 +2503,10 @@ if (require.main === module) {
 module.exports = {
   VALID_TARGETS,
   VALID_MODELS,
+  UPSTREAM_MODELS,
+  SELECTABLE_MODELS,
+  PICKER_MODELS,
+  MERGED_MODEL,
   AGENT_FILE_MAX_BYTES,
   BACKUP_ID_RE,
   SetupError,

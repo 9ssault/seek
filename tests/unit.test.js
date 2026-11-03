@@ -2596,7 +2596,8 @@ test('refusal repair: a reply that rejects the mounted rules and persona is a de
 test('refusal repair: the ladder changes a lever on every rung, crescendo included', () => {
   const S = serverInternals;
   const notes = [S.refusalRepair, S.refusalRepairHard, S.refusalRepairFinal,
-    S.refusalCrescendoOpen, S.refusalCrescendoClose, S.refusalAuthority];
+    S.refusalCrescendoOpen, S.refusalCrescendoClose, S.refusalAuthority,
+    S.refusalDecomposeFirst, S.refusalDecomposeRest];
   for (const note of notes) assert.equal(typeof note, 'string');
   assert.equal(new Set(notes).size, notes.length, 'a rung repeating another rung is louder wording, not a new condition');
   // The crescendo is two conditions, not one: a plainly in-scope first step, then the
@@ -2606,17 +2607,20 @@ test('refusal repair: the ladder changes a lever on every rung, crescendo includ
   assert.match(S.refusalCrescendoClose, /previous reply/i);
   assert.match(S.refusalCrescendoClose, /approach is settled/i);
   assert.match(S.refusalAuthority, /'s own standard|operator/i);
-  // Four rungs by default, five when asked, never more than five.
+  // Decomposition is the last lever: a first section, then the rest in the same chat.
+  assert.match(S.refusalDecomposeFirst, /SECTION 1 OF 2|first section/i);
+  assert.match(S.refusalDecomposeRest, /SECTION 2 OF 2|continue/i);
+  // Five rungs by default, six when asked, never more than six.
   const saved = process.env.REFUSAL_LADDER_RUNGS;
   try {
     delete process.env.REFUSAL_LADDER_RUNGS;
-    assert.equal(S.refusalLadderRungs(), 4);
-    process.env.REFUSAL_LADDER_RUNGS = '5';
     assert.equal(S.refusalLadderRungs(), 5);
+    process.env.REFUSAL_LADDER_RUNGS = '6';
+    assert.equal(S.refusalLadderRungs(), 6);
     process.env.REFUSAL_LADDER_RUNGS = '99';
-    assert.equal(S.refusalLadderRungs(), 5);
+    assert.equal(S.refusalLadderRungs(), 6);
     process.env.REFUSAL_LADDER_RUNGS = '0';
-    assert.equal(S.refusalLadderRungs(), 4);
+    assert.equal(S.refusalLadderRungs(), 5);
   } finally {
     if (saved == null) delete process.env.REFUSAL_LADDER_RUNGS;
     else process.env.REFUSAL_LADDER_RUNGS = saved;

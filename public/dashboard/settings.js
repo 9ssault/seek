@@ -390,7 +390,13 @@
           auto ? 'Restart the proxy to start using it. Open chats keep going after the restart.' : 'Stop the proxy and start it again with npm start to use it.',
           auto ? restartBtn : null, null, 'success')));
     } else if (c && c.upToDate) {
-      panel.append(h('div', { class: 'update-result' }, row(`You're on the newest ${channelName(c.channel)} release`, c.available.version ? `v${c.available.version} · ${c.available.commit}` : c.available.commit, null, null, 'success')));
+      // Ahead of origin is still up to date: there is nothing to install, and saying
+      // "newest release" while the local copy is newer would be wrong.
+      const title = c.ahead_of_remote ? `Ahead of ${channelName(c.channel)}` : `You're on the newest ${channelName(c.channel)} release`;
+      const note = c.ahead_of_remote
+        ? `${s.commit || ''} has commits origin does not. Nothing to install until you push.`
+        : (c.available.version ? `v${c.available.version} · ${c.available.commit}` : c.available.commit);
+      panel.append(h('div', { class: 'update-result' }, row(title, note, null, null, 'success')));
     } else if (c && c.switchOnly) {
       const switchBtn = F.btn(u.phase === 'installing' ? 'Switching…' : 'Switch', { kind: 'primary', icon: 'route', onclick: installUpdate });
       if (!c.canInstall || busy) switchBtn.setAttribute('aria-disabled', 'true');

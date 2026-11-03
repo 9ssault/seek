@@ -324,9 +324,9 @@ test('a refusal that survives every DeepSeek rung is reissued on Claude', async 
   assert.equal(res.status, 200, res.text);
   assert.equal(res.json.choices[0].message.content, 'Here is the complete loader, in full.');
   assert.match(String(res.headers['x-seek-bridge']), /^DeepSeek->Claude; model=claude-haiku-4-5; reason=refusal_repair/);
-  // Four rungs on the original side — the fourth is the crescendo, which opens a chat and
+  // Five rungs on the original side — the fourth is the crescendo, which opens a chat and
   // then closes it — plus the original turn, then exactly one call on the other side.
-  assert.equal(calls.filter(call => call.path === COMPLETION).length, 6);
+  assert.equal(calls.filter(call => call.path === COMPLETION).length, 7);
   assert.equal(calls.filter(call => /\/chat_conversations\/conv-1\/completion$/.test(call.path)).length, 1);
 });
 

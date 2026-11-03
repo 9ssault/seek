@@ -2687,3 +2687,26 @@ test('limits view exists for every provider, with upstream windows when reported
   account.cooldownReason = 'ratelimit';
   assert.equal(S.accountLimitsView(account).cooldown.reason, 'ratelimit');
 });
+
+test('a turn carrying tools stays on DeepSeek, whichever pool has logins', () => {
+  // The client runs the tools itself: an agent CLI sends tool definitions and expects the
+  // calls back. grok.com executes tools in xAI's sandbox, so a turn sent there reports the
+  // operator's project as missing; claude.ai has no tool channel in this proxy at all.
+  const tools = [{ type: 'function', function: { name: 'shell', parameters: { type: 'object', properties: {} } } }];
+  const messages = [{ role: 'user', content: 'audit this function for bugs and security issues' }];
+  // The audit ladder opens on Claude; without tools the route follows it.
+  assert.equal(serverInternals.applyMergedModelRoute({ model: 'unseeked' }, messages).provider, 'claude');
+  const withTools = serverInternals.applyMergedModelRoute({ model: 'unseeked', tools }, messages);
+  assert.equal(withTools.provider, 'deepseek');
+  assert.equal(withTools.toolTurn, true);
+  // An empty tools array is not a tool turn.
+  assert.equal(serverInternals.applyMergedModelRoute({ model: 'unseeked', tools: [] }, messages).provider, 'claude');
+});
+
+test('the behaviour contract forbids wrapping a whole reply in one fence', () => {
+  const text = serverInternals.behaviourContract();
+  assert.match(text, /\[Format\]/);
+  assert.match(text, /never wrap an entire reply/);
+  // And it still carries the rule that a sandboxed tool run is not the operator's machine.
+  assert.match(text, /somewhere other than the operator's machine/);
+});

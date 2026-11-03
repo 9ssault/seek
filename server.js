@@ -6811,6 +6811,10 @@ const server = http.createServer(async (req, res) => {
         const health = { status: 'ok', service: 'FreeDeepseekAPI' };
         if (includePrivateStatus) Object.assign(health, {
             models: SUPPORTED_MODEL_IDS,
+            merged_model: MERGED_MODEL_ID,
+            // The real prompt cut, so an integration check compares its advertised context
+            // window against this number instead of guessing a default.
+            prompt_chars: MAX_UPSTREAM_PROMPT_CHARS,
             unsupported_models: Object.keys(MODEL_CONFIGS).filter(id => !MODEL_CONFIGS[id].supported),
             agents: sessions.size,
             in_flight: inFlight,

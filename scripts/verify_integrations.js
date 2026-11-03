@@ -42,7 +42,7 @@ function collectModelIds(text) {
 }
 
 // Pure: what one generated OpenCode config says versus what the proxy serves.
-function checkOpencodeConfig(cfg, { models = [], baseUrl = null, apiKey = null, promptChars = 80000 } = {}) {
+function checkOpencodeConfig(cfg, { models = [], baseUrl = null, apiKey = null, promptChars = 120000 } = {}) {
     const problems = [];
     const notes = [];
     const provider = cfg && cfg.provider && cfg.provider.freedeepseek;
@@ -98,17 +98,21 @@ async function fetchProxy(baseUrl, apiKey, { timeoutMs = 5000 } = {}) {
         return { up: false, reason: `GET /health answered ${health.status}`, models: [], accounts: null, promptChars: null };
     }
     const h = health.json;
+    // /v1/models is the source of truth: it carries the merged `seek` id and the Claude and
+    // Grok ids, which the private health list does not. Fall back to health only when the
+    // proxy answers without a list.
     let models = Array.isArray(h.models) ? h.models : [];
-    if (!models.length) {
-        // A keyed proxy reports models only to an authorized caller.
-        const listed = await call('/v1/models');
-        if (listed.json && Array.isArray(listed.json.data)) models = listed.json.data.map((m) => m && m.id).filter(Boolean);
+    const listed = await call('/v1/models');
+    if (listed.json && Array.isArray(listed.json.data)) {
+        const live = listed.json.data.map((m) => m && m.id).filter(Boolean);
+        if (live.length) models = live;
     }
     return {
         up: true,
         models,
         accounts: Array.isArray(h.accounts) ? h.accounts : null,
-        promptChars: Number(process.env.DEEPSEEK_MAX_PROMPT_CHARS) || 80000,
+        // The proxy reports its real prompt cut; only guess if an older build does not.
+        promptChars: Number(h.prompt_chars) || Number(process.env.DEEPSEEK_MAX_PROMPT_CHARS) || 120000,
         status: h.status,
     };
 }
@@ -203,6 +207,17 @@ Options:
         const notes = [];
         const referenced = new Set();
         for (const file of files) {
+            // Only the gateway's own provider block is our business: another provider in the
+            // same OpenCode config (an OpenRouter block, say) names models this proxy never
+            // claimed to serve, and flagging them was a false positive.
+            if (item.target === 'opencode' && file.id === 'config') {
+                try {
+                    const cfg = JSON.parse(file.after);
+                    const own = (cfg.provider && cfg.provider.freedeepseek && cfg.provider.freedeepseek.models) || {};
+                    for (const id of Object.keys(own)) referenced.add(id);
+                    continue;
+                } catch (err) { /* fall through to the text scan */ }
+            }
             for (const id of collectModelIds(file.after)) referenced.add(id);
         }
         const served = proxy.models || [];

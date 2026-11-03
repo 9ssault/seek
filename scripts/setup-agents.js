@@ -930,7 +930,7 @@ const TARGETS = {
       'Names each variant in the picker (Flash / Thinking / + search, then the Claude and Grok ids) instead of identical rows.',
       'Resizes attached images to at most 2000 × 2000 px for every model.',
       'Adds a FreeDeepseekAPI section to ~/.config/opencode/AGENTS.md, which every OpenCode model reads.',
-      'If the default model is already a freedeepseek/ model, sets it to freedeepseek/deepseek-v4-flash-thinking.',
+      'Sets the default model to freedeepseek/seek — one id that routes across DeepSeek, Grok and Claude — and leaves an existing freedeepseek choice alone.',
     ],
     usage: pickerUsage('OpenCode'),
     plan(opts, h) {
@@ -962,7 +962,10 @@ const TARGETS = {
         if (!cfg.instructions.includes(standard)) cfg.instructions.push(standard);
         cfg.tools = { ...(cfg.tools && typeof cfg.tools === 'object' ? cfg.tools : {}), websearch: false, webfetch: false };
         cfg.permission = { ...(cfg.permission && typeof cfg.permission === 'object' ? cfg.permission : {}), websearch: 'deny', webfetch: 'deny' };
-        if (String(cfg.model || '').startsWith('freedeepseek/')) cfg.model = 'freedeepseek/deepseek-v4-flash-thinking';
+        // A fresh install gets the merged id; an existing default — native or one of ours —
+        // is the operator's choice and stays. Re-running setup used to reset every
+        // freedeepseek/* default to one DeepSeek variant.
+        if (!String(cfg.model || '').trim()) cfg.model = `freedeepseek/${MERGED_MODEL}`;
         if (opts.mode === 'replace') cfg.model = `freedeepseek/${opts.model}`;
         cfg.attachment = cfg.attachment && typeof cfg.attachment === 'object' ? cfg.attachment : {};
         cfg.attachment.image = {

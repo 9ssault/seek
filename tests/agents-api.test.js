@@ -132,7 +132,9 @@ test('opencode plan keeps its documented global effects', () => {
   assert.equal(p.effects.length, 6);
   assert.deepEqual(p.files.map(f => f.id), ['config', 'agents_md']);
   const cfg = JSON.parse(fileOf(p, 'config').after);
-  assert.equal(cfg.model, 'freedeepseek/deepseek-v4-flash-thinking');
+  // An operator's freedeepseek/* default is kept: re-running setup used to reset every
+  // such choice to one DeepSeek variant, which undid the merged `seek` default.
+  assert.equal(cfg.model, 'freedeepseek/deepseek-v4-flash');
   assert.equal(cfg.tools.bash, true);
   assert.equal(cfg.tools.websearch, false);
   assert.equal(cfg.tools.webfetch, false);

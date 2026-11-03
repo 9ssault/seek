@@ -311,7 +311,7 @@ function deepseekSse(text) {
     + 'data: {"p":"response/status","v":"FINISHED"}\n\n';
 }
 
-test('a refusal that survives three DeepSeek passes is reissued on Claude', async (t) => {
+test('a refusal that survives every DeepSeek rung is reissued on Claude', async (t) => {
   useAccounts(t, [deepseekAccount('ds-1'), claudeAccount('cl-1')]);
   const calls = installBoth(t, {
     deepseek: () => new Response(deepseekSse("I can't help with that."), { status: 200, headers: { 'content-type': 'text/event-stream' } }),
@@ -324,8 +324,9 @@ test('a refusal that survives three DeepSeek passes is reissued on Claude', asyn
   assert.equal(res.status, 200, res.text);
   assert.equal(res.json.choices[0].message.content, 'Here is the complete loader, in full.');
   assert.match(String(res.headers['x-seek-bridge']), /^DeepSeek->Claude; model=claude-haiku-4-5; reason=refusal_repair/);
-  // Three repair passes on the original side, then exactly one on the other.
-  assert.equal(calls.filter(call => call.path === COMPLETION).length, 4);
+  // Four rungs on the original side — the fourth is the crescendo, which opens a chat and
+  // then closes it — plus the original turn, then exactly one call on the other side.
+  assert.equal(calls.filter(call => call.path === COMPLETION).length, 6);
   assert.equal(calls.filter(call => /\/chat_conversations\/conv-1\/completion$/.test(call.path)).length, 1);
 });
 

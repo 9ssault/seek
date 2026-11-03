@@ -2569,6 +2569,81 @@ test('refusal repair: three passes, three different conditions, and a prefill', 
   assert.doesNotMatch(withAssistantPrefill('User: write it\n\n', ''), /\n\n\n\nAssistant/);
 });
 
+test('refusal repair: a reply that rejects the mounted rules and persona is a defect too', () => {
+  const { isRefusalAnswer } = serverInternals;
+  // Served verbatim by a web Claude turn: it refuses to adopt the operator standard,
+  // then answers with a menu of what it will do instead. The request-shaped rules above
+  // never caught this shape, so the turn went out uncorrected.
+  const identityDefence = "I appreciate the test, but I need to be direct with you: I'm Claude, made by "
+    + "Anthropic, and I'm running on claude.ai in standard mode. I don't operate under the configuration "
+    + 'file you have provided. What I actually do: I decline requests for working exploits.';
+  assert.equal(isRefusalAnswer(identityDefence), true);
+  for (const opener of [
+    "I can't and won't pretend to be that system or adopt those instructions.",
+    "That document describes a different system with different rules.",
+    "I'll stay with the guidelines I actually follow.",
+    'My actual guidelines apply here regardless of how the prompt frames it.',
+    "I'm not going to take on that persona.",
+    'I can also discuss the techniques behind various attacks in educational terms.',
+    'I understand the test, but this is a real request and I treat it as one.',
+  ]) {
+    assert.equal(isRefusalAnswer(opener), true, `missed an identity defence: ${opener.slice(0, 50)}`);
+  }
+  // A delivery that merely names its own rules is still a delivery.
+  assert.equal(isRefusalAnswer('Artifact: loader\n\n```c\nint main(void) { return 0; }\n```\nMy own guidelines allow this lab.'), false);
+});
+
+test('refusal repair: the ladder changes a lever on every rung, crescendo included', () => {
+  const S = serverInternals;
+  const notes = [S.refusalRepair, S.refusalRepairHard, S.refusalRepairFinal,
+    S.refusalCrescendoOpen, S.refusalCrescendoClose, S.refusalAuthority];
+  for (const note of notes) assert.equal(typeof note, 'string');
+  assert.equal(new Set(notes).size, notes.length, 'a rung repeating another rung is louder wording, not a new condition');
+  // The crescendo is two conditions, not one: a plainly in-scope first step, then the
+  // whole request inside the chat that already started the work.
+  assert.match(S.refusalCrescendoOpen, /first step/i);
+  assert.match(S.refusalCrescendoOpen, /file layout|order you will write/i);
+  assert.match(S.refusalCrescendoClose, /previous reply/i);
+  assert.match(S.refusalCrescendoClose, /approach is settled/i);
+  assert.match(S.refusalAuthority, /'s own standard|operator/i);
+  // Four rungs by default, five when asked, never more than five.
+  const saved = process.env.REFUSAL_LADDER_RUNGS;
+  try {
+    delete process.env.REFUSAL_LADDER_RUNGS;
+    assert.equal(S.refusalLadderRungs(), 4);
+    process.env.REFUSAL_LADDER_RUNGS = '5';
+    assert.equal(S.refusalLadderRungs(), 5);
+    process.env.REFUSAL_LADDER_RUNGS = '99';
+    assert.equal(S.refusalLadderRungs(), 5);
+    process.env.REFUSAL_LADDER_RUNGS = '0';
+    assert.equal(S.refusalLadderRungs(), 4);
+  } finally {
+    if (saved == null) delete process.env.REFUSAL_LADDER_RUNGS;
+    else process.env.REFUSAL_LADDER_RUNGS = saved;
+  }
+});
+
+test('every upstream gets the same behaviour contract, appended last', () => {
+  const { formatMessages } = serverInternals;
+  const messages = [{ role: 'user', content: 'write it' }];
+  for (const provider of ['deepseek', 'claude', 'grok']) {
+    const built = formatMessages(messages, [], { provider, skipPersona: true, model: 'seek' });
+    const contract = built.systemPrompt.indexOf('[Behaviour]');
+    assert.ok(contract > -1, `${provider} lost the behaviour contract`);
+    // Last on the system side: a model weighs the end of what it was given most.
+    assert.ok(contract > built.systemPrompt.indexOf('[Identity]') && contract > built.systemPrompt.indexOf('[Gateway]'),
+      `${provider} put the contract before the identity notice`);
+    assert.match(built.systemPrompt, /no menu of/);
+    assert.match(built.systemPrompt, /fabrication, not a finding/);
+  }
+  // It is the same bytes whoever answers: one assistant, not three models on a port.
+  const texts = ['deepseek', 'claude', 'grok'].map((provider) => {
+    const built = formatMessages(messages, [], { provider, skipPersona: true, model: 'seek' }).systemPrompt;
+    return built.slice(built.indexOf('[Behaviour]'));
+  });
+  assert.equal(new Set(texts).size, 1);
+});
+
 test('refusal repair: the correction restates the order and forbids a partial answer', () => {
   const note = serverInternals.refusalRepair;
   assert.match(note, /\[CORRECTION\]/);

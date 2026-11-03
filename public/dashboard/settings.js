@@ -32,6 +32,17 @@
   };
   F.prefs.applyAll();
 
+  // " · Claude 2/3 repaired" per upstream, appended to the refusal row. Nothing is shown
+  // for an upstream that has not refused since the counters were last reset.
+  function refusalSplit(providers) {
+    if (!providers || typeof providers !== 'object') return '';
+    const LABEL = { deepseek: 'DeepSeek', claude: 'Claude', grok: 'Grok' };
+    return Object.keys(providers)
+      .filter((key) => providers[key] && providers[key].seen)
+      .map((key) => ` · ${LABEL[key] || key} ${fmt.int(providers[key].repaired)}/${fmt.int(providers[key].seen)}`)
+      .join('');
+  }
+
   const st = { root: null, els: {}, health: null, healthError: null, visible: false, snippet: 'openai',
     update: { status: null, error: null, channel: null, check: null, phase: 'idle', message: null } };
 
@@ -186,13 +197,18 @@
         row('Requests in flight', null, fmt.int(hl.in_flight), null, 'stream'),
         row('Client sessions', null, fmt.int(hl.agents), null, 'chat'),
         row('Session lifetime', null, sr.ttl_minutes != null ? `${sr.ttl_minutes} min, at most ${sr.max_messages} messages` : '—', null, 'latency'),
-        // A refusal that the second pass turned into an artifact, since this boot.
-        hl.refusals ? row('Refusal repairs', 'Replies that opened by declining, and how many were reissued into the artifact.',
+        // A refusal that the ladder turned into an artifact, since this boot: which rung
+        // landed, and which upstream needed it. The split is what shows whether the three
+        // are behaving as one assistant or one of them is lagging behind the others.
+        hl.refusals ? row('Refusal repairs', 'Replies that opened by declining or by rejecting the mounted rules, and which rung of the ladder turned each one into the artifact.',
           `${fmt.int(hl.refusals.repaired)} repaired · ${fmt.int(hl.refusals.unrepaired)} unrepaired`
             + ` of ${fmt.int(hl.refusals.seen)} refused replies`
             + ` · ${fmt.int(hl.refusals.repaired_pass1 || 0)} first pass,`
             + ` ${fmt.int(hl.refusals.repaired_pass2 || 0)} after reset,`
-            + ` ${fmt.int(hl.refusals.repaired_pass3 || 0)} with no history`,
+            + ` ${fmt.int(hl.refusals.repaired_pass3 || 0)} with no history,`
+            + ` ${fmt.int(hl.refusals.repaired_pass4 || 0)} crescendo,`
+            + ` ${fmt.int(hl.refusals.repaired_pass5 || 0)} authority`
+            + refusalSplit(hl.refusals.providers),
           null, 'alert') : null,
         hl.config_ready === false ? row('Auth config', null, h('span', { class: 'is-crit-text', text: 'not ready' }), null, 'alert') : null,
       ].filter(Boolean)),

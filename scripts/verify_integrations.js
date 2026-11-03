@@ -67,7 +67,9 @@ function checkOpencodeConfig(cfg, { models = [], baseUrl = null, apiKey = null, 
         problems.push(`model(s) the proxy does not serve: ${unknown.join(', ')}`);
     }
     const unlisted = models.filter((id) => !advertised.includes(id));
-    if (unlisted.length) notes.push(`not offered in OpenCode: ${unlisted.join(', ')}`);
+    // The picker carries the merged id plus the DeepSeek variants; a vendor id is still
+    // reachable by naming it, so this is a note about the menu, not a missing model.
+    if (unlisted.length) notes.push(`not in the OpenCode picker, reachable by pinning the id: ${unlisted.join(', ')}`);
     // The proxy cuts a prompt at `promptChars` characters before it sends it, so a
     // bigger advertised window just means OpenCode fills context that gets truncated.
     const honest = Math.max(8192, Math.floor(Number(promptChars) / CHARS_PER_TOKEN));

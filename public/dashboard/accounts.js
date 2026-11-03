@@ -949,6 +949,12 @@
       h('label', { class: 'field-label', for: 'add-name', text: 'Name' }), nameInput, nameHelp,
       formErr,
       h('div', { class: 'dialog-foot' }, h('div', { class: 'dialog-actions' }, cancel, submit)));
+    // The server reports the exact inbox, so a custom SEEK_ACCOUNT_INBOX_DIR is not
+    // silently described as the default path.
+    function accountInboxPath() {
+      const health = F.store && F.store.health;
+      return (health && health.accounts_inbox) || '~/.freedeepseek-api/accounts/inbox/';
+    }
     const step = (n, title, detail) => h('li', { class: 'add-step' },
       h('span', { class: 'add-step-n', 'aria-hidden': 'true', text: String(n) }),
       h('span', { class: 'add-step-body' }, h('span', { class: 'add-step-title', text: title }), h('span', { class: 'add-step-detail' }, detail)));
@@ -969,7 +975,10 @@
       addSteps.replaceChildren(
         installStep(),
         step(2, 'Read your session', readStep),
-        step(3, 'Bring the file here', [h('span', { text: 'Click ' }), h('strong', { text: 'Download' }), h('span', { text: `, then drop ${jar ? `${provider}-auth.json` : 'deepseek-auth.json'} into Auth file` })]));
+        step(3, 'Bring the file here', [h('span', { text: 'Click ' }), h('strong', { text: 'Download' }), h('span', { text: `, then drop ${jar ? `${provider}-auth.json` : 'deepseek-auth.json'} into Auth file` })]),
+        // The same import, without this dialog: a folder the gateway watches, so a batch
+        // of captures can be dropped in at once and lands verified.
+        step(4, 'Or skip this dialog', [h('span', { text: 'Drop any exported jar into ' }), code(accountInboxPath()), h('span', { text: ' — it is verified and added within a few seconds, and filed under imported/ or rejected/.' })]));
     };
     // Where the file comes from, over whale sharks rising to the surface (MEDIA.md); the form on the right.
     const visual = h('aside', { class: 'add-visual' },

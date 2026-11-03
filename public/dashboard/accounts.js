@@ -79,6 +79,22 @@
     }
   }
 
+  // A login captured in the browser extension (or pushed by another dashboard tab) lands
+  // on disk behind this page. Polling keeps the list honest without a manual reload, and
+  // stays out of the way while an action is in flight or a dialog is open.
+  const LIVE_REFRESH_MS = 15000;
+  let liveTimer = null;
+  function startLiveRefresh() {
+    stopLiveRefresh();
+    liveTimer = setInterval(() => {
+      if (!st.visible || document.hidden) return;
+      if (st.pending.size || !F.store.accounts) return;
+      if (document.querySelector('dialog[open]')) return;
+      F.refresh();
+    }, LIVE_REFRESH_MS);
+  }
+  function stopLiveRefresh() { if (liveTimer) { clearInterval(liveTimer); liveTimer = null; } }
+
   async function reload(btn) {
     if (btn && btn.getAttribute('aria-busy') === 'true') return;
     F.setPending(btn, 'Reloading…');
@@ -994,6 +1010,151 @@
     dlg.showModal();
   }
 
+  // A batch of captures at once: one exported jar per object, or an array of them, or a
+  // file with one document after another. Every item goes through the same import the
+  // single dialog uses, so each is verified, duplicate-checked and named by the server;
+  // this only shows one row per login and why the ones that failed did.
+  function parseBatch(text) {
+    const trimmed = String(text || '').trim();
+    if (!trimmed) return { items: [] };
+    let doc;
+    try {
+      doc = JSON.parse(trimmed);
+    } catch (e) {
+      // Several exports pasted one after another are not one JSON document.
+      const chunks = trimmed.split(/\n\s*\n|\n(?=\s*\{)/).map(s => s.trim()).filter(Boolean);
+      const parsed = [];
+      for (const chunk of chunks) {
+        try { parsed.push(JSON.parse(chunk)); }
+        catch { return { error: `Not valid JSON: ${e.message}` }; }
+      }
+      if (!parsed.length) return { error: `Not valid JSON: ${e.message}` };
+      doc = parsed;
+    }
+    const list = Array.isArray(doc) ? doc : (Array.isArray(doc.accounts) ? doc.accounts : [doc]);
+    return {
+      items: list.filter(item => item && typeof item === 'object').map((item) => {
+        const auth = item.auth && typeof item.auth === 'object' ? item.auth : item;
+        const name = String(item.name || auth.name || auth.email || auth.org || '').trim();
+        return { name, auth, provider: item.provider || auth.provider };
+      }),
+    };
+  }
+
+  function openBulk(trigger) {
+    const dlg = document.getElementById('add-account');
+    dlg.classList.add('dialog-split');
+    const close = () => dlg.close();
+    const text = h('textarea', {
+      class: 'input input-code bulk-text', id: 'bulk-text', spellcheck: 'false', rows: '9',
+      placeholder: '[\n  { "name": "work", "auth": { … } },\n  { "name": "home", "auth": { … } }\n]',
+    });
+    const fileInput = h('input', { type: 'file', accept: 'application/json,.json', class: 'sr-only', id: 'bulk-file', multiple: true });
+    const count = h('p', { class: 'field-help', text: 'Drop exported jars, or paste them: one object, an array of them, or one document after another.' });
+    const results = h('ul', { class: 'bulk-results', 'aria-live': 'polite' });
+    const formErr = h('div', { class: 'form-error', role: 'alert', hidden: true });
+    const submit = F.btn('Add accounts', { kind: 'primary', type: 'submit' });
+    const cancel = F.btn('Cancel', { onclick: close });
+
+    const readFiles = async (files) => {
+      const texts = [];
+      for (const file of Array.from(files || [])) {
+        if (!/\.json$/i.test(file.name) && file.type !== 'application/json') continue;
+        if (file.size > 512 * 1024) { count.textContent = `${file.name} is ${fmt.int(file.size / 1024)} KB — too big for auth files.`; continue; }
+        texts.push(await file.text());
+      }
+      if (texts.length) {
+        text.value = texts.join('\n');
+        refreshCount();
+      }
+    };
+    const refreshCount = () => {
+      const batch = parseBatch(text.value);
+      if (batch.error) { count.textContent = batch.error; submit.setAttribute('aria-disabled', 'true'); return; }
+      count.textContent = batch.items.length
+        ? `${batch.items.length} login${batch.items.length === 1 ? '' : 's'} ready to import. Each one is verified on its own.`
+        : 'Drop exported jars, or paste them: one object, an array of them, or one document after another.';
+      submit.setAttribute('aria-disabled', String(!batch.items.length));
+    };
+    text.addEventListener('input', refreshCount);
+    fileInput.addEventListener('change', () => { readFiles(fileInput.files); fileInput.value = ''; });
+    const zone = h('div', { class: 'source', id: 'bulk-source' }, text);
+    zone.addEventListener('dragover', (e) => { e.preventDefault(); zone.classList.add('is-over'); });
+    zone.addEventListener('dragleave', (e) => { if (!zone.contains(e.relatedTarget)) zone.classList.remove('is-over'); });
+    zone.addEventListener('drop', (e) => {
+      e.preventDefault();
+      zone.classList.remove('is-over');
+      readFiles(e.dataTransfer.files);
+    });
+
+    const form = h('form', { class: 'dialog-form', method: 'dialog', novalidate: true });
+    form.addEventListener('submit', async (e) => {
+      e.preventDefault();
+      if (submit.getAttribute('aria-disabled') === 'true' || submit.getAttribute('aria-busy') === 'true') return;
+      const batch = parseBatch(text.value);
+      if (batch.error || !batch.items.length) { refreshCount(); return; }
+      formErr.hidden = true;
+      F.setPending(submit, 'Importing…');
+      try {
+        const res = await F.api('POST', '/admin/accounts/bulk', { body: { accounts: batch.items } });
+        F.applyAccountUpdate(res);
+        const rows = Array.isArray(res.results) ? res.results : [];
+        results.replaceChildren(...rows.map((row) => h('li', { class: ['bulk-row', row.ok ? 'is-ok' : 'is-bad'] },
+          F.icon(row.ok ? 'check' : 'error-x', 'bulk-row-icon'),
+          h('span', { class: 'bulk-row-name', text: row.name || `account-${row.index + 1}` }),
+          h('span', { class: 'bulk-row-note', text: row.ok ? (row.replaced ? `recaptured as ${row.id}` : `added as ${row.id}`) : row.message || row.error }))));
+        text.value = '';
+        refreshCount();
+        const added = Number(res.added) || 0;
+        const recaptured = Number(res.recaptured) || 0;
+        const failed = Number(res.failed) || 0;
+        F.toast(`${added} added${recaptured ? `, ${recaptured} recaptured` : ''}${failed ? `, ${failed} rejected` : ''}`, { tone: failed ? 'warn' : 'success' });
+        F.refresh();
+      } catch (err) {
+        if (F.handleGate(err)) { close(); return; }
+        formErr.replaceChildren(h('p', { text: F.errorText(err) }));
+        formErr.hidden = false;
+      } finally {
+        F.clearPending(submit);
+      }
+    });
+
+    const steps = h('ol', { class: 'add-steps', 'aria-label': 'How a batch is imported' },
+      h('li', { class: 'add-step' }, h('span', { class: 'add-step-n', 'aria-hidden': 'true', text: '1' }),
+        h('span', { class: 'add-step-body' }, h('span', { class: 'add-step-title', text: 'Collect the exports' }),
+          h('span', { class: 'add-step-detail', text: 'One jar per browser profile: Download in the extension, or press Capture all.' }))),
+      h('li', { class: 'add-step' }, h('span', { class: 'add-step-n', 'aria-hidden': 'true', text: '2' }),
+        h('span', { class: 'add-step-body' }, h('span', { class: 'add-step-title', text: 'Drop them here' }),
+          h('span', { class: 'add-step-detail', text: 'Files or pasted JSON — DeepSeek, Claude and Grok logins can arrive in the same batch.' }))),
+      h('li', { class: 'add-step' }, h('span', { class: 'add-step-n', 'aria-hidden': 'true', text: '3' }),
+        h('span', { class: 'add-step-body' }, h('span', { class: 'add-step-title', text: 'Read the rows' }),
+          h('span', { class: 'add-step-detail', text: 'Each login is verified alone: a rejected one never hides the ones that landed.' }))));
+    const visual = h('aside', { class: 'add-visual' },
+      h('img', { class: 'add-visual-media', src: '/dashboard/media-whale-sharks.jpg', alt: '', decoding: 'async', 'aria-hidden': 'true' }),
+      h('div', { class: 'add-visual-inner' },
+        h('h2', { class: 'add-title', id: 'bulk-title', text: 'Add accounts in bulk' }), steps));
+
+    form.append(
+      fileInput,
+      h('label', { class: 'field-label', for: 'bulk-file', text: 'Auth files' }),
+      h('div', { class: 'dialog-actions', style: { 'margin-bottom': '10px' } },
+        h('label', { class: 'source-pick', for: 'bulk-file', text: 'Choose files' })),
+      zone, count,
+      results,
+      formErr,
+      h('div', { class: 'dialog-foot' }, h('div', { class: 'dialog-actions' }, cancel, submit)));
+
+    dlg.replaceChildren(
+      F.iconBtn('close', 'Close', { onclick: close, cls: 'dialog-close' }),
+      visual,
+      h('div', { class: 'add-panel' }, form));
+    dlg.setAttribute('aria-labelledby', 'bulk-title');
+    refreshCount();
+    dlg.onclose = () => { dlg.removeAttribute('aria-labelledby'); if (trigger && document.contains(trigger)) trigger.focus(); };
+    dlg.showModal();
+    text.focus();
+  }
+
   // ---------------------------------------------------------------- keyboard
   function onKey(e) {
     if (e.key !== 'j' && e.key !== 'k' && e.key !== 'Enter') return false;
@@ -1016,11 +1177,13 @@
     actions() {
       return [
         F.btn('Reload from disk', { icon: 'reload', onclick: (e) => reload(e.currentTarget) }),
+        F.btn('Bulk add', { icon: 'files', onclick: (e) => openBulk(e.currentTarget) }),
         F.btn('Add account', { kind: 'primary', icon: 'plus', onclick: (e) => openAdd(e.currentTarget) }),
       ];
     },
     show(route) {
       st.visible = true;
+      startLiveRefresh();
       if (st.els.filterInput) st.els.filterInput.value = st.query;
       render();
       if (route.sub) {
@@ -1037,11 +1200,12 @@
         render();
       }
     },
-    hide() { st.visible = false; if (F.inspector.owner === 'account') F.inspector.close({ silent: true }); st.selected = null; },
+    hide() { st.visible = false; stopLiveRefresh(); if (F.inspector.owner === 'account') F.inspector.close({ silent: true }); st.selected = null; },
     onKey,
     get filterInput() { return st.els.filterInput; },
     // shared
     openAdd,
+    openBulk,
     reload,
     action,
     emptyPool,

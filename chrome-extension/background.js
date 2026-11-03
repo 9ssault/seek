@@ -962,6 +962,39 @@ chrome.runtime.onMessage.addListener((request, _sender, sendResponse) => {
     return true; // keep message channel open for async response
   }
 
+  // Every upstream this browser is signed in to, in one press. Each collector already
+  // stores its own capture and says why it could not; this only runs them in order and
+  // answers one row per provider, so the popup can push whatever is ready.
+  if (request.action === 'captureAll') {
+    (async () => {
+      const results = [];
+      for (const provider of ['deepseek', 'claude', 'grok']) {
+        try {
+          if (provider === 'deepseek') {
+            const tab = await findDeepSeekTab();
+            if (!tab) {
+              results.push({ provider, ok: false, error: 'Open chat.deepseek.com and sign in first.' });
+              continue;
+            }
+            const auth = await collectAndStore(tab.id);
+            results.push(auth && auth._verified !== false
+              ? { provider, ok: true, auth }
+              : { provider, ok: false, error: (auth && auth._error) || 'DeepSeek rejected this session.', auth });
+          } else {
+            const auth = provider === 'claude' ? await collectClaude() : await collectGrok();
+            results.push(auth && auth._verified !== false
+              ? { provider, ok: true, auth }
+              : { provider, ok: false, error: (auth && auth._error) || `${provider} rejected this session.`, auth });
+          }
+        } catch (e) {
+          results.push({ provider, ok: false, error: (e && e.message) || String(e) });
+        }
+      }
+      answer({ success: true, results });
+    })();
+    return true;
+  }
+
   // Sign the browser out of DeepSeek (called by the popup after a successful push)
   if (request.action === 'signOut') {
     const doSignOut = request.provider === 'claude' || request.provider === 'grok'

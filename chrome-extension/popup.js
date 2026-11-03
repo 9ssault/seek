@@ -26,6 +26,7 @@ const els = {
   calloutTitle:      document.getElementById('calloutTitle'),
   calloutBody:       document.getElementById('calloutBody'),
   btnCollect:        document.getElementById('btnCollect'),
+  btnCaptureAll:     document.getElementById('btnCaptureAll'),
   btnCopy:           document.getElementById('btnCopy'),
   btnSave:           document.getElementById('btnSave'),
   btnPush:           document.getElementById('btnPush'),
@@ -65,6 +66,21 @@ let autoPushOnCapture = true;
 
 function cookieCount(cookie) {
   return String(cookie || '').split(';').map((p) => p.trim()).filter(Boolean).length;
+}
+
+// A cookie-jar login is named after what the capture knows about it. When the session
+// document exposes neither a name nor an organisation, every login would be pushed as
+// "Grok Account" — one name for all of them, so each push replaced the one before it in
+// the pool. A short digest of the session cookie keeps the fallback stable for a given
+// login and distinct between logins.
+function sessionTag(cookie) {
+  const text = String(cookie || '');
+  let h = 0x811c9dc5;
+  for (let i = 0; i < text.length; i++) {
+    h ^= text.charCodeAt(i);
+    h = Math.imul(h, 0x01000193) >>> 0;
+  }
+  return h.toString(16).padStart(8, '0').slice(0, 6);
 }
 
 // The two cookie-only upstreams. A login for either one IS its cookie jar: there is no
@@ -458,6 +474,15 @@ async function readPool() {
       return {
         base,
         total: accounts.length,
+        // Per-upstream counts: with three providers in one pool, "1/1 logins ready" would
+        // hide that only one of them is loaded at all.
+        providers: accounts.reduce((acc, a) => {
+          const p = (a && a.provider) || 'deepseek';
+          acc[p] = acc[p] || { total: 0, ready: 0 };
+          acc[p].total += 1;
+          if (a && a.ready !== false && a.enabled !== false && !a.cooldown) acc[p].ready += 1;
+          return acc;
+        }, {}),
         ready: accounts.filter(a => a && a.ready !== false && a.enabled !== false && !a.cooldown).length,
         labels: accounts.map(a => String(a?.name || a?.id || '').toLowerCase()).filter(Boolean),
         // login label -> token fingerprint, so a re-capture of the same login is told apart
@@ -534,6 +559,41 @@ function renderLimits() {
     : 'Counted by the proxy: this upstream publishes no quota windows.';
 }
 
+// The name a capture is pushed under: whatever the session says about itself, otherwise
+// a provider fallback that stays unique per login (see sessionTag).
+function nameForCapture(auth, p = provider) {
+  const j = jarInfo(p);
+  return auth.name || auth.email || auth.org
+    || (j ? `${j.account} ${sessionTag(auth.cookie)}` : 'DeepSeek Account');
+}
+
+// One import POST, tried against each proxy address in turn. Returns the first success
+// with its parsed body, or the last reason the server gave, so callers can report it.
+async function pushToProxy(payload) {
+  let lastError = '';
+  for (const base of PROXY_URLS) {
+    try {
+      const res = await fetch(`${base}/admin/accounts/import`, {
+        method:  'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body:    payload,
+      });
+      if (res.ok) {
+        let body = null;
+        try { body = await res.json(); } catch { /* a build that answers without a body */ }
+        return { ok: true, base, status: res.status, body };
+      }
+      try {
+        const json = await res.json();
+        lastError = json?.error?.message || `HTTP ${res.status}`;
+      } catch { lastError = `HTTP ${res.status}`; }
+    } catch (e) {
+      lastError = e.message || 'Network error';
+    }
+  }
+  return { ok: false, lastError };
+}
+
 function renderPool() {
   const el = document.getElementById('poolLine');
   if (!el) return;
@@ -543,7 +603,13 @@ function renderPool() {
     return;
   }
   const peak = poolSnapshot.peak ? ` · ${poolSnapshot.peak.window} ${poolSnapshot.peak.pct}%` : '';
-  el.textContent = `${poolSnapshot.ready}/${poolSnapshot.total} logins ready${peak}`;
+  // Name the upstreams other than DeepSeek, which is the pool's default and the longest
+  // word here; two Claude logins and one Grok login are the part worth seeing.
+  const extra = Object.entries(poolSnapshot.providers || {})
+    .filter(([p, own]) => p !== 'deepseek' && own.total)
+    .map(([p, own]) => `${own.total} ${p === 'claude' ? 'Claude' : p === 'grok' ? 'Grok' : p}`)
+    .join(' · ');
+  el.textContent = `${poolSnapshot.ready}/${poolSnapshot.total} logins ready${peak}${extra ? ` · ${extra}` : ''}`;
   el.title = poolSnapshot.peak
     ? `Highest upstream quota window in the pool: ${poolSnapshot.peak.window} at ${poolSnapshot.peak.pct}% used.`
     : 'No upstream quota windows have been reported yet.';
@@ -555,7 +621,7 @@ els.btnPush.addEventListener('click', async () => {
   els.btnPush.disabled = true;
 
   // Server expects { name, provider, auth } — derive a display name from the session.
-  const accountName = lastExport.name || lastExport.email || (jarInfo() ? jarInfo().account : 'DeepSeek Account');
+  const accountName = nameForCapture(lastExport);
   poolSnapshot = poolSnapshot || await readPool();
   const loginKey = String(lastExport.email || lastExport.name || '').trim().toLowerCase();
   const needsAuth = Boolean(loginKey && poolSnapshot?.needsAuth?.includes(loginKey));
@@ -574,57 +640,37 @@ els.btnPush.addEventListener('click', async () => {
       return;
     }
   }
-  const payload = JSON.stringify({ name: accountName, provider, auth: lastExport });
-  let pushed    = false;
-  let lastError = '';
+  const result = await pushToProxy(JSON.stringify({ name: accountName, provider, auth: lastExport }));
 
-  for (const base of PROXY_URLS) {
-    try {
-      const res = await fetch(`${base}/admin/accounts/import`, {
-        method:  'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body:    payload,
-      });
-      if (res.ok) {
-        pushed = true;
-        // A brand-new account was created: sign this browser out of that upstream so the
-        // login belongs to the proxy only and the next capture starts clean. The imported
-        // copy keeps working because it carries its own cookies.
-        const upstream = provider === 'claude' ? 'claude.ai' : provider === 'grok' ? 'grok.com' : 'DeepSeek';
-        let signedOut = false;
-        if (res.status === 201 && signOutAfterPush) {
-          try {
-            const out = await send('signOut', { provider });
-            signedOut = Boolean(out && out.success);
-          } catch { /* keep the push result even if sign-out fails */ }
-        }
-        showCallout(
-          'ok',
-          signedOut ? 'Pushed and signed out' : 'Pushed to proxy',
-          signedOut
-            ? `Session sent to ${base}. This browser is signed out of ${upstream}; the proxy keeps the login.`
-            : `Session sent to ${base}${jarInfo() ? ` as a ${jarInfo().label} login` : ''}`
-        );
-        flashButton(els.btnPush, '✓ Pushed');
-        readPool().then((pool) => { poolSnapshot = pool; renderPool(); });
-        break;
-      } else {
-        // Surface the server's error message when the request reaches the proxy
-        // but is rejected (e.g. duplicate account, invalid auth).
-        try {
-          const json = await res.json();
-          lastError = json?.error?.message || `HTTP ${res.status}`;
-        } catch {
-          lastError = `HTTP ${res.status}`;
-        }
-      }
-    } catch (e) {
-      lastError = e.message || 'Network error';
-      // try next URL
+  if (result.ok) {
+    // Say which pool row the login became. With several logins per upstream, "pushed"
+    // alone does not tell you whether it added a row or replaced one.
+    const row = result.body && result.body.account ? result.body.account : null;
+    const landed = row
+      ? ` Pool row: ${row.name || row.id}${row.id && row.id !== row.name ? ` (${row.id})` : ''}.`
+      : '';
+    // A brand-new account was created: sign this browser out of that upstream so the
+    // login belongs to the proxy only and the next capture starts clean. The imported
+    // copy keeps working because it carries its own cookies.
+    const upstream = provider === 'claude' ? 'claude.ai' : provider === 'grok' ? 'grok.com' : 'DeepSeek';
+    let signedOut = false;
+    if (result.status === 201 && signOutAfterPush) {
+      try {
+        const out = await send('signOut', { provider });
+        signedOut = Boolean(out && out.success);
+      } catch { /* keep the push result even if sign-out fails */ }
     }
-  }
-
-  if (!pushed) {
+    showCallout(
+      'ok',
+      signedOut ? 'Pushed and signed out' : 'Pushed to proxy',
+      signedOut
+        ? `Session sent to ${result.base}. This browser is signed out of ${upstream}; the proxy keeps the login.${landed}`
+        : `Session sent to ${result.base}${jarInfo() ? ` as a ${jarInfo().label} login` : ''}.${landed}`
+    );
+    flashButton(els.btnPush, '✓ Pushed');
+    readPool().then((pool) => { poolSnapshot = pool; renderPool(); });
+  } else {
+    const lastError = result.lastError || '';
     if (lastError && !lastError.startsWith('Network error') && !lastError.startsWith('Failed to fetch')) {
       showCallout('error', 'Push rejected', lastError);
     } else {
@@ -634,6 +680,58 @@ els.btnPush.addEventListener('click', async () => {
   }
 
   els.btnPush.disabled = false;
+});
+
+// ─── Capture all ───────────────────────────────────────────────────────
+
+// One press: read every upstream this browser is signed in to, push whatever verifies,
+// and report one line per provider. The single-provider buttons stay for a re-capture.
+els.btnCaptureAll.addEventListener('click', async () => {
+  const btn = els.btnCaptureAll;
+  if (btn.getAttribute('aria-busy') === 'true') return;
+  btn.disabled = true;
+  btn.setAttribute('aria-busy', 'true');
+  try {
+    const out = await send('captureAll');
+    if (!out) {
+      showCallout('error', 'No answer from the extension', 'Reload the unpacked extension in chrome://extensions, then try again.');
+      return;
+    }
+    if (out.success === false) throw new Error(out.error || 'The extension worker refused the capture.');
+    const results = Array.isArray(out.results) ? out.results : [];
+    const lines = [];
+    let added = 0;
+    for (const r of results) {
+      const label = r.provider === 'claude' ? 'Claude' : r.provider === 'grok' ? 'Grok' : 'DeepSeek';
+      if (!r.ok) { lines.push(`${label}: ${r.error || 'no session'}`); continue; }
+      const res = await pushToProxy(JSON.stringify({
+        name: nameForCapture(r.auth || {}, r.provider), provider: r.provider, auth: r.auth || {},
+      }));
+      if (!res.ok) { lines.push(`${label}: ${res.lastError || 'rejected'}`); continue; }
+      const row = res.body && res.body.account ? res.body.account : null;
+      const verb = res.body && res.body.replaced ? 'recaptured' : 'added';
+      lines.push(`${label}: ${verb}${row ? ` as ${row.name || row.id}` : ''}`);
+      added++;
+      // Same rule as a single push: a login that just left this browser starts clean.
+      if (res.status === 201 && signOutAfterPush) {
+        try { await send('signOut', { provider: r.provider }); } catch { /* the push already landed */ }
+      }
+    }
+    const read = results.length - added;
+    showCallout(
+      added ? 'ok' : 'warning',
+      added ? `Pushed ${added} login${added === 1 ? '' : 's'}` : 'Nothing pushed',
+      lines.join(' · ') || 'No upstream session was readable in this browser.'
+    );
+    if (read === 0 && added === 0) showCallout('warning', 'No sessions found', 'Sign in on claude.ai, grok.com or chat.deepseek.com, then press Capture all again.');
+    poolSnapshot = await readPool();
+    renderPool();
+  } catch (e) {
+    showCallout('error', 'Capture all failed', e.message || String(e));
+  } finally {
+    btn.removeAttribute('aria-busy');
+    btn.disabled = false;
+  }
 });
 
 // ─── Google Sign-In button ───────────────────────────────────────────────────

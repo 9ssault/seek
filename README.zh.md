@@ -46,7 +46,7 @@
 ### 1. 一分钟启动
 
 ```bash
-git clone --branch stable https://github.com/9ssault/unseeked.git
+git clone https://github.com/9ssault/unseeked.git
 cd unseeked
 npm run auth
 npm run dashboard
@@ -159,7 +159,7 @@ unseeked 在本机启动一个 API 服务，后端是 **DeepSeek Web Chat**（[c
 ## 快速开始
 
 ```bash
-git clone --branch stable https://github.com/9ssault/unseeked.git
+git clone https://github.com/9ssault/unseeked.git
 cd unseeked
 npm run auth
 npm start
@@ -209,7 +209,7 @@ PROXY_CORS_ORIGINS='https://ui.example.com,http://192.168.1.20:3000'
 ## Windows
 
 ```powershell
-git clone --branch stable https://github.com/9ssault/unseeked.git
+git clone https://github.com/9ssault/unseeked.git
 cd unseeked
 npm run auth
 npm start
@@ -229,7 +229,7 @@ npm run auth
 ## Linux / Chromium
 
 ```bash
-git clone --branch stable https://github.com/9ssault/unseeked.git
+git clone https://github.com/9ssault/unseeked.git
 cd unseeked
 CHROME_PATH=$(which chromium) npm run auth
 npm start
@@ -512,12 +512,7 @@ npm run auth:import -- --input ~/Downloads/deepseek-auth.json --output ./account
 
 DeepSeek 会不时调整网页聊天，unseeked 会跟着更新。请让你的副本保持最新。
 
-两个渠道，都是 GitHub 上的分支：
-
-| 渠道 | 内容 |
-|---|---|
-| `stable` | 经过检查后的版本。默认渠道，快速开始克隆的就是它。 |
-| `latest` | 每个版本一发布就到。 |
+更新跟随这个仓库的一个分支。默认是 `main`，快速开始克隆的就是它；Settings → Updates 会列出 origin 上实际存在的分支，因此你自己的渠道分支也一样能用。
 
 **在面板中：** Settings → Updates。选好渠道，**Check for updates** 显示新内容，**Install** 把副本更新过去，**Restart now** 加载新版本。用 `npm start` 或 `npm run dashboard` 启动时会自动重启；否则请手动停止再启动。
 
@@ -526,7 +521,7 @@ DeepSeek 会不时调整网页聊天，unseeked 会跟着更新。请让你的�
 **手动更新：**
 
 ```bash
-git fetch origin && git switch stable && git merge --ff-only origin/stable
+git fetch origin && git switch main && git merge --ff-only origin/main
 ```
 
 然后重启代理。
@@ -574,7 +569,7 @@ npm run setup:agents -- --target codex --model deepseek-v4-flash
 
 `--model` 始终是 DeepSeek-V4.1-Flash，并打开 chat.deepseek.com 的自带搜索。`-thinking` 打开 DeepThink。`-nosearch` 关闭搜索，这时编程代理会保留自己的联网工具。旧的 `-search` id 等同于去掉这个后缀的 id。
 
-Codex 的安装 **不会** 写入 `forced_login_method = api`。在 Codex CLI 里，这一行会把你登出 ChatGPT。普通的 `codex` 仍然走 ChatGPT。FreeDeepseek 这个配置才跟本代理说话。
+Codex 的安装 **不会** 写入 `forced_login_method = api`。在 Codex CLI 里，这一行会把你登出 ChatGPT。普通的 `codex` 仍然走 ChatGPT。unseeked 这个配置才跟本代理说话。
 
 图片：
 

@@ -5853,6 +5853,24 @@ function validAccountName(value) {
     }
     return name;
 }
+// A cookie-jar login (Claude, Grok) is named by whoever captured it, and the browser
+// extension has no identity to name it with when the session document does not expose
+// one: it falls back to "<Provider> Account". Two different logins then ask for the same
+// name, and reusing the file of the first one would silently drop the second — four new
+// Grok logins, one row in the dashboard. A generic name that is already taken gets a
+// suffix instead, so every login keeps its own file.
+function isGenericAccountName(name) {
+    return /^(?:(?:grok|claude|deepseek)\s+)?account$/i.test(String(name || '').trim());
+}
+function allocateAccountName(name, taken) {
+    const base = accountSlug(name, () => false);
+    if (!base) return { name, slug: accountSlug(name, taken) };
+    if (!taken(base) || !isGenericAccountName(name)) return { name, slug: base };
+    let n = 1;
+    let slug;
+    do { slug = `${base}-${++n}`; } while (taken(slug));
+    return { name: `${String(name).trim()} ${n}`, slug };
+}
 function accountSlug(name, taken) {
     const slug = name.toLowerCase().replace(/[^a-z0-9._-]+/g, '-').replace(/^[-.]+|[-.]+$/g, '').slice(0, 48);
     // An explicit name keeps its slug: if it is taken the caller answers 409 account_exists
@@ -5898,18 +5916,19 @@ async function adminImportClaudeAccount(name, input, dir) {
                 `claude.ai rejected this cookie: ${error.message}`, { probe });
         }
     }
+    const taken = candidate => accounts.some(a => a.id === candidate) || fs.existsSync(path.join(dir, `${candidate}.json`));
     const wanted = name.trim().toLowerCase();
     const existing = accounts.find(a => a.provider === claudeWeb.PROVIDER && String(a.config?.name || a.label || a.id || '').trim().toLowerCase() === wanted);
-    const target = existing?.file
-        ? path.resolve(existing.file)
-        : path.join(dir, `${accountSlug(name, candidate => accounts.some(a => a.id === candidate) || fs.existsSync(path.join(dir, `${candidate}.json`)))}.json`);
+    const reuse = existing?.file && !isGenericAccountName(name) ? path.resolve(existing.file) : null;
+    const allocated = allocateAccountName(name, taken);
+    const target = reuse || path.join(dir, `${allocated.slug}.json`);
     try {
         fs.mkdirSync(dir, { recursive: true, mode: 0o700 });
-        writeAuthFileAtomic(target, { name, ...config });
+        writeAuthFileAtomic(target, { name: allocated.name, ...config });
     } catch (e) {
         throw new AdminHttpError(500, 'auth_file_write_failed', `Could not write auth file ${path.basename(target)}: ${e.code || 'error'}`);
     }
-    console.log(`[admin] imported Claude login ${name} -> ${path.basename(target)} (probe: ${probe.kind})`);
+    console.log(`[admin] imported Claude login ${allocated.name} -> ${path.basename(target)} (probe: ${probe.kind})`);
     const result = adminReloadAccounts();
     const account = accounts.find(a => a.file && path.resolve(a.file) === target);
     if (!result.ok || !account) {
@@ -5917,7 +5936,7 @@ async function adminImportClaudeAccount(name, input, dir) {
     }
     account.lastProbe = { ...probe, at: Date.now() };
     account.claudeOrg = config.org || null;
-    return { account, result, replaced: Boolean(existing) };
+    return { account, result, replaced: Boolean(reuse) };
 }
 // A Grok login is a cookie jar for the same reason a Claude one is: grok.com
 // authenticates with `sso`, and there is no token to paste. Verification asks the
@@ -5939,25 +5958,26 @@ async function adminImportGrokAccount(name, input, dir) {
                 `grok.com rejected this cookie: ${probe.detail || 'verification failed'}`, { probe });
         }
     }
+    const taken = candidate => accounts.some(a => a.id === candidate) || fs.existsSync(path.join(dir, `${candidate}.json`));
     const wanted = name.trim().toLowerCase();
     const existing = accounts.find(a => a.provider === grokWeb.PROVIDER && String(a.config?.name || a.label || a.id || '').trim().toLowerCase() === wanted);
-    const target = existing?.file
-        ? path.resolve(existing.file)
-        : path.join(dir, `${accountSlug(name, candidate => accounts.some(a => a.id === candidate) || fs.existsSync(path.join(dir, `${candidate}.json`)))}.json`);
+    const reuse = existing?.file && !isGenericAccountName(name) ? path.resolve(existing.file) : null;
+    const allocated = allocateAccountName(name, taken);
+    const target = reuse || path.join(dir, `${allocated.slug}.json`);
     try {
         fs.mkdirSync(dir, { recursive: true, mode: 0o700 });
-        writeAuthFileAtomic(target, { name, ...config });
+        writeAuthFileAtomic(target, { name: allocated.name, ...config });
     } catch (e) {
         throw new AdminHttpError(500, 'auth_file_write_failed', `Could not write auth file ${path.basename(target)}: ${e.code || 'error'}`);
     }
-    console.log(`[admin] imported Grok login ${name} -> ${path.basename(target)} (probe: ${probe.kind})`);
+    console.log(`[admin] imported Grok login ${allocated.name} -> ${path.basename(target)} (probe: ${probe.kind})`);
     const result = adminReloadAccounts();
     const account = accounts.find(a => a.file && path.resolve(a.file) === target);
     if (!result.ok || !account) {
         throw new AdminHttpError(500, 'import_not_loaded', `Wrote ${path.basename(target)} but the reload did not load it.`, { errors: result.errors || [] });
     }
     account.lastProbe = { ...probe, at: Date.now() };
-    return { account, result, replaced: Boolean(existing) };
+    return { account, result, replaced: Boolean(reuse) };
 }
 async function adminImportAccount(body) {
     const name = validAccountName(body.name);

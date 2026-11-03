@@ -1,0 +1,55 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1280" height="640" viewBox="0 0 1280 640" role="img" aria-label="unseeked — one local API for DeepSeek, Claude and Grok">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#212121"/>
+      <stop offset="0.55" stop-color="#1b1b1c"/>
+      <stop offset="1" stop-color="#141617"/>
+    </linearGradient>
+    <radialGradient id="glow" cx="0.78" cy="0.18" r="0.62">
+      <stop offset="0" stop-color="#4d6bfe" stop-opacity="0.22"/>
+      <stop offset="0.55" stop-color="#4d6bfe" stop-opacity="0.05"/>
+      <stop offset="1" stop-color="#4d6bfe" stop-opacity="0"/>
+    </radialGradient>
+    <radialGradient id="glow2" cx="0.12" cy="0.9" r="0.55">
+      <stop offset="0" stop-color="#76b7b2" stop-opacity="0.14"/>
+      <stop offset="1" stop-color="#76b7b2" stop-opacity="0"/>
+    </radialGradient>
+  </defs>
+
+  <rect width="1280" height="640" fill="url(#bg)"/>
+  <rect width="1280" height="640" fill="url(#glow)"/>
+  <rect width="1280" height="640" fill="url(#glow2)"/>
+
+  <!-- hairline frame -->
+  <rect x="48" y="48" width="1184" height="544" rx="28" fill="none" stroke="#ffffff" stroke-opacity="0.08"/>
+
+  <g font-family="ui-sans-serif, -apple-system, 'Segoe UI Variable Text', 'Segoe UI', system-ui, 'Helvetica Neue', Arial, sans-serif">
+    <text x="112" y="300" fill="#ececec" font-size="132" font-weight="650" letter-spacing="-4">unseeked</text>
+    <text x="116" y="356" fill="#9a9a9f" font-size="30" letter-spacing="0.2">One local API — DeepSeek · Claude · Grok</text>
+
+    <g transform="translate(116, 414)">
+      <g fill="none" stroke="#ffffff" stroke-opacity="0.16" stroke-width="1.5">
+        <rect x="0" y="0" width="252" height="62" rx="31"/>
+        <rect x="272" y="0" width="196" height="62" rx="31"/>
+        <rect x="488" y="0" width="150" height="62" rx="31"/>
+      </g>
+      <g font-size="24" font-weight="500">
+        <circle cx="36" cy="31" r="6" fill="#4d6bfe"/>
+        <text x="58" y="39" fill="#dcdce2">DeepSeek</text>
+        <circle cx="308" cy="31" r="6" fill="#d97757"/>
+        <text x="330" y="39" fill="#dcdce2">Claude</text>
+        <circle cx="524" cy="31" r="6" fill="#76b7b2"/>
+        <text x="546" y="39" fill="#dcdce2">Grok</text>
+      </g>
+    </g>
+  </g>
+
+  <!-- the mark: a wave folded into a loop, drawn once -->
+  <g transform="translate(1012, 236)" fill="none" stroke-linecap="round">
+    <path d="M0 96c34-64 72-64 104-16s70 48 104-16" stroke="#4d6bfe" stroke-opacity="0.85" stroke-width="10"/>
+    <path d="M12 128c34-64 72-64 104-16s70 48 104-16" stroke="#76b7b2" stroke-opacity="0.55" stroke-width="10"/>
+    <path d="M24 160c34-64 72-64 104-16s70 48 104-16" stroke="#ffffff" stroke-opacity="0.18" stroke-width="10"/>
+  </g>
+
+  <text x="1164" y="566" text-anchor="end" fill="#6d6d73" font-family="ui-monospace, 'SF Mono', Menlo, Consolas, monospace" font-size="22">github.com/9ssault/unseeked</text>
+</svg>

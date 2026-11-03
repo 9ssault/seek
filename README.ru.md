@@ -46,7 +46,7 @@
 ### 1. Запуск за минуту
 
 ```bash
-git clone --branch stable https://github.com/9ssault/unseeked.git
+git clone https://github.com/9ssault/unseeked.git
 cd unseeked
 npm run auth
 npm run dashboard
@@ -159,7 +159,7 @@ unseeked поднимает локальный API-сервер перед **Dee
 ## Быстрый старт
 
 ```bash
-git clone --branch stable https://github.com/9ssault/unseeked.git
+git clone https://github.com/9ssault/unseeked.git
 cd unseeked
 npm run auth
 npm start
@@ -209,7 +209,7 @@ PROXY_CORS_ORIGINS='https://ui.example.com,http://192.168.1.20:3000'
 ## Windows
 
 ```powershell
-git clone --branch stable https://github.com/9ssault/unseeked.git
+git clone https://github.com/9ssault/unseeked.git
 cd unseeked
 npm run auth
 npm start
@@ -229,7 +229,7 @@ npm run auth
 ## Linux / Chromium
 
 ```bash
-git clone --branch stable https://github.com/9ssault/unseeked.git
+git clone https://github.com/9ssault/unseeked.git
 cd unseeked
 CHROME_PATH=$(which chromium) npm run auth
 npm start
@@ -512,12 +512,7 @@ npm run auth:import -- --input ~/Downloads/deepseek-auth.json --output ./account
 
 DeepSeek время от времени меняет свой Web-чат, и unseeked подстраивается под эти изменения. Держите свою копию свежей.
 
-Два канала, оба — ветки на GitHub:
-
-| Канал | Что приходит |
-|---|---|
-| `stable` | Релиз, после того как его проверили. Канал по умолчанию, его клонирует Quick start. |
-| `latest` | Каждый релиз сразу после выхода. |
+Обновления идут по ветке этого репозитория. Ветка по умолчанию — `main`, её и клонирует Quick start; Settings → Updates показывает все ветки, которые реально есть в origin, поэтому своя ветка-канал работает так же.
 
 **Из дашборда:** Settings → Updates. Выберите канал, **Check for updates** покажет, что нового, **Install** переведёт вашу копию на новую версию, **Restart now** её запустит. Перезапуск автоматический, если прокси запущен через `npm start` или `npm run dashboard`; иначе остановите его и запустите снова.
 
@@ -526,7 +521,7 @@ DeepSeek время от времени меняет свой Web-чат, и uns
 **Вручную:**
 
 ```bash
-git fetch origin && git switch stable && git merge --ff-only origin/stable
+git fetch origin && git switch main && git merge --ff-only origin/main
 ```
 
 Потом перезапустите прокси.
@@ -574,7 +569,7 @@ Setup добавляет unseeked как отдельный профиль. Clau
 
 `--model` всегда DeepSeek-V4.1-Flash с включённым родным поиском chat.deepseek.com. `-thinking` включает DeepThink. `-nosearch` выключает поиск; тогда у агента остаются его собственные веб-инструменты. Старый id с `-search` отображается на тот же id без суффикса.
 
-Setup Codex **не** пишет `forced_login_method = api`. На Codex CLI эта строка разлогинивает ChatGPT. Обычный `codex` остаётся на ChatGPT. Профиль FreeDeepseek говорит с этим прокси.
+Setup Codex **не** пишет `forced_login_method = api`. На Codex CLI эта строка разлогинивает ChatGPT. Обычный `codex` остаётся на ChatGPT. Профиль unseeked говорит с этим прокси.
 
 Картинки:
 

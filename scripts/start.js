@@ -121,6 +121,10 @@ function run() {
     const env = { ...process.env, FDSA_LAUNCHER: '1' };
     // A restart skips the start menu and does not open another browser tab.
     if (restarts > 0) Object.assign(env, { FDSA_RESTARTED: '1', SKIP_ACCOUNT_MENU: '1' });
+    // The start menu needs a terminal. Launched from a service, a detached shell or a
+    // script there is no tty, and the menu would wait for a keypress that never comes:
+    // the gateway never binds and the dashboard reports a connection refused.
+    if (!process.stdin.isTTY) env.SKIP_ACCOUNT_MENU = '1';
     const startedAt = Date.now();
     child = spawn(process.execPath, [entry, ...args], {
         stdio: 'inherit',

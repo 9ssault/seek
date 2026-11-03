@@ -27,6 +27,7 @@
       render();
     });
     const modeSeg = F.segmented('Traffic view', [{ value: 'diagram', icon: 'chart-view', ariaLabel: 'Diagram' }, { value: 'table', icon: 'table-view', ariaLabel: 'Table' }], st.mode, (v) => { st.mode = v; render(); });
+    const upstream = h('div', { class: 'upstream-strip', role: 'list', 'aria-label': 'Logins per upstream' });
     const lanes = h('div', { class: 'lanes-host' });
     const twin = h('div', { class: 'lanes-twin', hidden: true });
     const trafficNote = h('div', { class: 'traffic-note' });
@@ -41,7 +42,7 @@
     lanes.addEventListener('focusout', () => { lanes._hold = false; });
 
     root.append(
-      hero(h('header', { class: 'status-head' }, sentence)),
+      hero(h('header', { class: 'status-head' }, sentence, upstream)),
       h('div', { class: 'view-pad' },
         emptyPool,
         h('section', { class: 'section', 'aria-labelledby': 'traffic-h' },
@@ -51,7 +52,7 @@
         readouts,
         h('div', { class: 'rule' }),
         h('section', { class: 'section' }, errorsHead, errors)));
-    Object.assign(st.els, { sentence, lanes, twin, trafficNote, readouts, errors, emptyPool, windowSeg, modeSeg });
+    Object.assign(st.els, { sentence, upstream, lanes, twin, trafficNote, readouts, errors, emptyPool, windowSeg, modeSeg });
 
     F.on('accounts', () => { if (st.visible) render(); });
     F.on('requests', () => { if (st.visible) render(); });
@@ -86,7 +87,36 @@
     return { text, tone: null };
   }
 
+  // One pill per upstream. The pool is three separate pools, and a single "6 of 23 can
+  // serve" hides which one is short: a Claude login cannot answer a DeepSeek model.
+  function drawUpstreams() {
+    const host = st.els.upstream;
+    if (!host) return;
+    const data = F.store.accounts;
+    const by = (data && data.pool && data.pool.by_provider) || null;
+    const sig = by ? JSON.stringify(by) : '';
+    if (host._sig === sig) return;
+    host._sig = sig;
+    host.replaceChildren();
+    if (!by) return;
+    const NAMES = { deepseek: 'DeepSeek', claude: 'Claude', grok: 'Grok' };
+    for (const key of ['deepseek', 'claude', 'grok']) {
+      const own = by[key];
+      if (!own || !own.total) continue;
+      const tone = own.can_serve === 0 ? 'is-crit' : own.can_serve < own.total ? 'is-warn' : 'is-ok';
+      const detail = [`${own.can_serve} of ${own.total} can serve`];
+      if (own.busy) detail.push(`${own.busy} busy`);
+      if (own.cooldown) detail.push(`${own.cooldown} cooling down`);
+      if (own.disabled) detail.push(`${own.disabled} paused`);
+      if (own.no_credentials) detail.push(`${own.no_credentials} without credentials`);
+      host.append(h('span', { class: ['upstream-pill', tone], role: 'listitem', 'data-tip': detail.join(' · ') },
+        h('span', { class: 'upstream-name', text: NAMES[key] || key }),
+        h('span', { class: 'upstream-count', text: `${own.can_serve}/${own.total}` })));
+    }
+  }
+
   function tick() {
+    drawUpstreams();
     const p = sentenceParts();
     st.els.sentence.replaceChildren(p.tone === 'crit' ? F.icon('alert', 'sentence-icon') : '', p.text);
     st.els.sentence.classList.toggle('is-crit', p.tone === 'crit');

@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="docs/assets/logo.png" alt="unseeked" width="160" />
+  <img src="docs/assets/banner.svg" alt="unseeked — one local API for DeepSeek, Claude and Grok" width="100%" />
 </p>
 
 <h1 align="center">unseeked</h1>
@@ -594,12 +594,7 @@ The container image ships the dashboard. With `--read-only`, actions that write 
 
 DeepSeek changes its Web chat from time to time, and unseeked follows. Keep your copy current.
 
-Two channels, both branches on GitHub:
-
-| Channel | What it gets |
-|---|---|
-| `stable` | A release once it has been checked. The default, and what Quick start clones. |
-| `latest` | Every release as soon as it is out. |
+Updates follow a branch of this repository. `main` is the default and what Quick start clones; Settings → Updates lists the branches origin actually publishes, so a channel branch of your own works the same way.
 
 **From the dashboard:** Settings → Updates. Pick a channel, **Check for updates** shows what is new, **Install** moves your copy to it, **Restart now** loads it. The restart is automatic when the proxy runs with `npm start` or `npm run dashboard`; otherwise stop it and start it again.
 
@@ -608,7 +603,7 @@ The dashboard only moves your copy forward. It stops and shows the command to ru
 **By hand:**
 
 ```bash
-git fetch origin && git switch stable && git merge --ff-only origin/stable
+git fetch origin && git switch main && git merge --ff-only origin/main
 ```
 
 Then restart the proxy.
@@ -664,7 +659,7 @@ Setup adds unseeked as an opt-in profile. It does not replace Claude, GPT, or wh
 
 `npm run verify:integrations` compares every agent config with the proxy that is actually running: the model ids it names, the context window it advertises (the proxy trims a prompt to `DEEPSEEK_MAX_PROMPT_CHARS`, so advertising 1M tokens only fills context that then gets cut), the base URL and key it sends, and whether the file still matches what setup writes. It reads only, and `--probe` adds one real completion. Exit code 2 lists what needs a fix.
 
-Codex setup does **not** set `forced_login_method = api`. On Codex CLI that line logs you out of ChatGPT. Normal `codex` stays on ChatGPT. The FreeDeepseek profile talks to this proxy.
+Codex setup does **not** set `forced_login_method = api`. On Codex CLI that line logs you out of ChatGPT. Normal `codex` stays on ChatGPT. The unseeked profile talks to this proxy.
 
 Images:
 

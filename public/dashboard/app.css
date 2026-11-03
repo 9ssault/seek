@@ -143,6 +143,16 @@ path, circle, rect, ellipse, line, polyline { vector-effect: non-scaling-stroke;
 .quiet { color: var(--ink-3); }
 .readout-inline { font-weight: 600; font-variant-numeric: tabular-nums; }
 .is-crit-text { color: var(--crit); }
+/* Per-upstream pool health under the hero sentence: three pools, three numbers, so a
+   short upstream is visible before a request fails on it. */
+.upstream-strip { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 14px; }
+.upstream-pill { display: inline-flex; align-items: baseline; gap: 8px; padding: 5px 11px; border-radius: 999px; border: 1px solid var(--rule-mid); background: rgb(255 255 255 / 0.04); font-size: 0.75rem; }
+.upstream-name { color: var(--ink-2); }
+.upstream-count { font-family: var(--font-mono); font-size: 0.75rem; color: var(--ink); font-variant-numeric: tabular-nums; }
+.upstream-pill.is-warn { border-color: rgb(242 180 60 / 0.45); }
+.upstream-pill.is-warn .upstream-count { color: var(--warn); }
+.upstream-pill.is-crit { border-color: rgb(242 107 107 / 0.5); background: var(--crit-wash); }
+.upstream-pill.is-crit .upstream-count { color: var(--crit); }
 .is-warn-text { color: var(--warn); }
 .is-ok-text { color: var(--ok); }
 .is-signal-text { color: var(--signal); }
@@ -309,6 +319,15 @@ path, circle, rect, ellipse, line, polyline { vector-effect: non-scaling-stroke;
 .input::placeholder { color: var(--ink-3); }
 textarea.input { height: auto; padding: 10px 14px; resize: vertical; }
 .input-code { font-family: var(--font-mono); font-size: 0.8125rem; line-height: 1.25rem; }
+/* A batch of jars pasted or dropped at once: the field grows, the rows below say what landed. */
+.bulk-text { height: auto; min-height: 160px; padding: 12px 14px; resize: vertical; line-height: 1.5; }
+.bulk-results { list-style: none; margin: 14px 0 0; padding: 0; display: grid; gap: 6px; max-height: 220px; overflow: auto; }
+.bulk-row { display: grid; grid-template-columns: auto minmax(0, auto) minmax(0, 1fr); align-items: baseline; gap: 8px; padding: 6px 10px; border-radius: var(--r-sm); background: var(--sunken); font-size: 0.8125rem; }
+.bulk-row-icon { width: 14px; height: 14px; color: var(--ink-3); align-self: center; }
+.bulk-row.is-ok .bulk-row-icon { color: var(--ok, #6ec48a); }
+.bulk-row.is-bad .bulk-row-icon { color: var(--crit); }
+.bulk-row-name { color: var(--ink); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.bulk-row-note { color: var(--ink-3); word-break: break-word; }
 .input-search { height: 36px; }
 .field-label { display: block; font-size: 0.875rem; font-weight: 500; line-height: 1.25rem; margin: 18px 0 8px; }
 

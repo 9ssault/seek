@@ -51,6 +51,31 @@ test('bulk import adds every capture and reports each one in order', async (t) =
     assert.deepEqual(written.sort(), ['bulk-alpha.json', 'bulk-beta.json']);
 });
 
+test('two Grok logins pushed under the same generic name both land', async (t) => {
+    const original = S.accounts.splice(0, S.accounts.length);
+    t.after(() => { S.accounts.splice(0, S.accounts.length, ...original); });
+    // The extension falls back to "Grok Account" when a session exposes no identity. Two
+    // real logins then share a name, and reusing the first one's file dropped the second.
+    const first = await S.adminImportAccount({
+        name: 'Grok Account', provider: 'grok',
+        auth: { provider: 'grok', cookie: 'sso=grok-one; cf_clearance=a' },
+    });
+    const second = await S.adminImportAccount({
+        name: 'Grok Account', provider: 'grok',
+        auth: { provider: 'grok', cookie: 'sso=grok-two; cf_clearance=b' },
+    });
+    assert.notEqual(first.account.id, second.account.id);
+    assert.equal(second.replaced, false);
+    // The second login keeps a name of its own instead of being a copy of the first.
+    assert.equal(second.account.config.name, 'Grok Account 2');
+    const files = fs.readdirSync(store).filter(n => n.startsWith('grok-account') && n.endsWith('.json'));
+    assert.equal(files.length, 2, `one file per login, got ${files.join(', ')}`);
+    const stored = fs.readdirSync(store)
+        .filter(n => n.startsWith('grok-account') && n.endsWith('.json'))
+        .map(n => JSON.parse(fs.readFileSync(path.join(store, n), 'utf8')).cookie);
+    assert.deepEqual(stored.sort(), ['sso=grok-one; cf_clearance=a', 'sso=grok-two; cf_clearance=b']);
+});
+
 test('a duplicate inside one batch is reported, and the rest still land', async (t) => {
     const original = S.accounts.splice(0, S.accounts.length);
     t.after(() => { S.accounts.splice(0, S.accounts.length, ...original); });

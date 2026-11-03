@@ -10,6 +10,7 @@
   "scripts": {
     "start": "node scripts/start.js",
     "dashboard": "node scripts/start.js --dashboard",
+    "dash": "node scripts/start.js",
     "auth": "node scripts/auth.js",
     "auth:import": "node scripts/auth_import.js",
     "claude:auth": "node scripts/claude_chrome_auth.js",

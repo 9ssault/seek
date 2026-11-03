@@ -526,6 +526,27 @@ A DeepSeek entry with email and password is signed in through the web login endp
 DEEPSEEK_AUTH_DIR=tests/fixtures/pool npm start
 ```
 
+### Adding many accounts without a dialog each
+
+Three paths, all of them the same verified import: provider detection from the jar, a live check against the upstream, duplicate refusal, and a re-capture when the account is already loaded.
+
+```bash
+npm run accounts:add -- captures/                     # a folder of jars, one pass
+npm run accounts:add -- a.json b.json --json          # explicit files, machine-readable
+```
+
+**The inbox.** Drop a cookie jar into the inbox folder and it becomes a loaded login within a few seconds — no dashboard, no terminal:
+
+```
+~/.freedeepseek-api/accounts/inbox/          # drop acme.json here
+~/.freedeepseek-api/accounts/inbox/imported/ # filed after a successful import
+~/.freedeepseek-api/accounts/inbox/rejected/ # filed with the reason it was refused
+```
+
+The filename is the account name unless the jar carries its own `name`. `GET /health` reports the exact path as `accounts_inbox`. A capture that arrives while the gateway is down is picked up on the next start. `SEEK_ACCOUNT_INBOX_OFF=1` disables it; `SEEK_ACCOUNT_INBOX_DIR` moves it.
+
+**Bulk push.** `POST /admin/accounts/bulk` takes `{ "accounts": [{ "name", "auth", "provider" }] }`, up to 50 per request, and answers per item (`ok`, `id`, `replaced`, or `error`), so one bad capture cannot hide behind a good one. It is the endpoint the CLI and the inbox both use.
+
 ---
 
 ## Dashboard

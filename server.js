@@ -5831,6 +5831,10 @@ function looksLikeDeepSeekToken(token) {
     return /^[0-9a-f]{64}$/i.test(String(token || '').trim());
 }
 const IMPORT_VERIFY = !isTruthy(process.env.DEEPSEEK_IMPORT_VERIFY_OFF);
+// How many logins one bulk push may carry. A phone photo of a spreadsheet is not a
+// reason to hold the event loop: 50 is more than an operator captures in a sitting and
+// small enough that each one is still verified before the reply is written.
+const BULK_IMPORT_MAX = 50;
 
 // The directory the dashboard may write auth files to, or null when auth files come
 // from an explicit DEEPSEEK_AUTH_PATH list. Mirrors discoverAuthPaths.
@@ -6040,6 +6044,149 @@ async function adminImportAccount(body) {
     if (probe.ok) account.invalid = false;
     return { account, result };
 }
+// Feeds a batch through the single-account importer, which already detects the provider,
+// verifies the capture against the upstream, refuses duplicates and repairs a recapture.
+// One result per item, in order, so the caller knows exactly which login failed and why.
+async function adminImportAccountsBulk(body) {
+    const list = Array.isArray(body?.accounts) ? body.accounts
+        : Array.isArray(body?.items) ? body.items : null;
+    if (!list) {
+        throw new AdminHttpError(422, 'invalid_request',
+            'accounts must be an array of { name, auth, provider } objects');
+    }
+    if (!list.length) throw new AdminHttpError(422, 'invalid_request', 'accounts is empty');
+    if (list.length > BULK_IMPORT_MAX) {
+        throw new AdminHttpError(422, 'too_many_accounts',
+            `Send at most ${BULK_IMPORT_MAX} accounts per request (got ${list.length}).`);
+    }
+    const results = [];
+    for (const [index, item] of list.entries()) {
+        const name = typeof item?.name === 'string' && item.name.trim()
+            ? item.name.trim() : `account-${index + 1}`;
+        try {
+            const { account, replaced } = await adminImportAccount({ ...item, name });
+            results.push({ index, name, ok: true, id: account.id, replaced: replaced === true });
+        } catch (err) {
+            results.push({
+                index, name, ok: false,
+                status: err?.status || 500,
+                error: err?.type || 'import_failed',
+                message: err?.message || String(err),
+            });
+        }
+    }
+    const added = results.filter(r => r.ok && !r.replaced).length;
+    const recaptured = results.filter(r => r.ok && r.replaced).length;
+    const duplicates = results.filter(r => !r.ok && r.error === 'duplicate_account').length;
+    const failed = results.filter(r => !r.ok && r.error !== 'duplicate_account').length;
+    console.log(`[admin] bulk import: ${added} added, ${recaptured} re-captured,`
+        + ` ${duplicates} already loaded, ${failed} rejected`);
+    return { total: list.length, added, replaced: recaptured, duplicates, failed, results };
+}
+
+// ─── Inbox: account capture without opening the dashboard ─────────────────────
+// Point a browser export at this folder and the login is in the pool a few seconds later:
+// each jar is imported through the same path as the dashboard push (provider detection,
+// live verification, duplicate refusal), then moved to imported/ or rejected/ so the
+// folder never reprocesses it. `SEEK_ACCOUNT_INBOX_OFF=1` turns it off, and a custom
+// `SEEK_ACCOUNT_INBOX_DIR` moves it anywhere.
+const INBOX_POLL_MS = 5000;
+let inboxTimer = null;
+let inboxBusy = false;
+
+function accountInboxDir() {
+    if (isTruthy(process.env.SEEK_ACCOUNT_INBOX_OFF)) return '';
+    const custom = String(process.env.SEEK_ACCOUNT_INBOX_DIR || '').trim();
+    if (custom) return path.resolve(custom);
+    const dir = managedAccountsDir();
+    return dir ? path.join(dir, 'inbox') : '';
+}
+
+function inboxMove(dir, file, bucket, stamp) {
+    const targetDir = path.join(dir, bucket);
+    try {
+        fs.mkdirSync(targetDir, { recursive: true });
+        const base = path.basename(file);
+        let target = path.join(targetDir, base);
+        // Two captures of the same account in one sitting must not overwrite the first
+        // audit trail, so a second one is filed beside it with a stamp.
+        if (fs.existsSync(target)) target = path.join(targetDir, `${stamp}-${base}`);
+        fs.renameSync(file, target);
+        return target;
+    } catch (err) {
+        console.log(`[inbox] could not file ${path.basename(file)} under ${bucket}: ${err.message}`);
+        return null;
+    }
+}
+
+async function accountInboxPass() {
+    const dir = accountInboxDir();
+    const report = { skipped: null, imported: [], rejected: [] };
+    if (!dir) { report.skipped = 'disabled'; return report; }
+    if (inboxBusy) { report.skipped = 'busy'; return report; }
+    if (!fs.existsSync(dir)) return report;
+    let names;
+    try {
+        names = fs.readdirSync(dir).filter(name => name.toLowerCase().endsWith('.json')).sort();
+    } catch (err) {
+        report.skipped = `unreadable: ${err.message}`;
+        return report;
+    }
+    if (!names.length) return report;
+    inboxBusy = true;
+    const stamp = new Date().toISOString().replace(/[:.]/g, '-');
+    try {
+        for (const name of names.slice(0, BULK_IMPORT_MAX)) {
+            const file = path.join(dir, name);
+            let auth;
+            try {
+                auth = JSON.parse(fs.readFileSync(file, 'utf8'));
+                if (!auth || typeof auth !== 'object' || Array.isArray(auth)) throw new Error('expected a JSON object');
+            } catch (err) {
+                console.log(`[inbox] ${name}: ${err.message}`);
+                inboxMove(dir, file, 'rejected', stamp);
+                report.rejected.push({ file: name, error: 'invalid_json', message: err.message });
+                continue;
+            }
+            // The filename is the account name, so a folder of `acme.json`, `beta.json`
+            // lands as acme and beta rather than three entries called account-1.
+            const accountName = String(auth.name || path.basename(name, path.extname(name))).trim()
+                || path.basename(name, path.extname(name));
+            try {
+                const { account, replaced } = await adminImportAccount({ name: accountName, auth });
+                inboxMove(dir, file, 'imported', stamp);
+                console.log(`[inbox] ${name}: ${replaced ? 're-captured' : 'imported'} as ${account.id}`);
+                report.imported.push({ file: name, id: account.id, replaced: replaced === true });
+            } catch (err) {
+                if (err?.type === 'duplicate_account') {
+                    inboxMove(dir, file, 'imported', stamp);
+                    report.imported.push({ file: name, id: err.extra?.account || null, duplicate: true });
+                    continue;
+                }
+                console.log(`[inbox] ${name}: rejected (${err?.type || 'import_failed'}) ${err?.message || ''}`);
+                inboxMove(dir, file, 'rejected', stamp);
+                report.rejected.push({ file: name, error: err?.type || 'import_failed', message: err?.message || String(err) });
+            }
+        }
+    } finally {
+        inboxBusy = false;
+    }
+    return report;
+}
+
+function startAccountInbox() {
+    const dir = accountInboxDir();
+    if (!dir || inboxTimer) return null;
+    try { fs.mkdirSync(dir, { recursive: true }); } catch (err) {
+        console.log(`[inbox] cannot create ${dir}: ${err.message}`);
+        return null;
+    }
+    console.log(`[inbox] watching ${accountsDir.shortPath(dir)} for account captures (drop a .json jar in)`);
+    inboxTimer = setInterval(() => { accountInboxPass().catch(err => console.log(`[inbox] pass failed: ${err.message}`)); }, INBOX_POLL_MS);
+    if (inboxTimer.unref) inboxTimer.unref();
+    return dir;
+}
+
 const PATCH_FIELDS = new Set(['name', 'enabled']);
 function adminPatchAccount(account, body) {
     const keys = Object.keys(body);
@@ -6199,7 +6346,7 @@ function adminRestoreAccount(body) {
 }
 
 const ADMIN_ACCOUNT_ACTIONS = new Set(['disable', 'enable', 'clear-cooldown', 'probe', 'refresh']);
-const ADMIN_COLLECTION_ACTIONS = new Set(['reload', 'import', 'restore', 'probe-all']);
+const ADMIN_COLLECTION_ACTIONS = new Set(['reload', 'import', 'bulk', 'restore', 'probe-all']);
 // --- Self-update (Settings → Updates) ---
 let updater = createUpdater({ root: __dirname });
 let updateBusy = false;
@@ -6651,6 +6798,18 @@ async function handleAdminRequest(req, res, url) {
                 });
                 return;
             }
+            if (parts[2] === 'bulk') {
+                // Many captures in one push, verified one at a time so a bad jar cannot
+                // hide behind a good one or abort the rest of the batch.
+                const report = await adminImportAccountsBulk(await readAdminJsonBody(req));
+                const now = Date.now();
+                adminJson(res, report.failed ? 207 : 201, {
+                    ...report,
+                    accounts: accounts.map(a => adminAccountView(a, now)),
+                    pool: adminPoolSummary(now),
+                });
+                return;
+            }
             const { account, result, replaced } = await adminImportAccount(await readAdminJsonBody(req));
             const now = Date.now();
             adminJson(res, replaced ? 200 : 201, {
@@ -6912,10 +7071,13 @@ const server = http.createServer(async (req, res) => {
     // Health check
     if (req.method === 'GET' && (url.pathname === '/' || url.pathname === '/health')) {
         const includePrivateStatus = !PROXY_API_KEY || isProxyAuthorized(req.headers.authorization);
-        const health = { status: 'ok', service: 'FreeDeepseekAPI' };
+        const health = { status: 'ok', service: 'unseeked' };
         if (includePrivateStatus) Object.assign(health, {
             models: SUPPORTED_MODEL_IDS,
             merged_model: MERGED_MODEL_ID,
+            // Where a dropped cookie jar becomes a verified login, so the dashboard and
+            // the operator both name the same folder.
+            accounts_inbox: accountInboxDir() || null,
             // The real prompt cut, so an integration check compares its advertised context
             // window against this number instead of guessing a default.
             prompt_chars: MAX_UPSTREAM_PROMPT_CHARS,
@@ -8627,6 +8789,11 @@ async function main() {
     setInterval(sweepIdleSessions, 10 * 60 * 1000).unref();
     // A login that DeepSeek revokes looks healthy until it is asked. Ask on a timer.
     startAccountHealthLoop();
+    // Drop-a-jar capture: an exported session in the inbox becomes a verified login
+    // without anyone opening the dashboard. One pass at startup catches files that
+    // arrived while the gateway was down.
+    startAccountInbox();
+    accountInboxPass().catch(err => console.log(`[inbox] first pass failed: ${err.message}`));
     server.listen(PORT, listenHost, () => {
         // ── startup status board ────────────────────────────────────────────
         const R = '\x1b[0m', B = '\x1b[1m', D = '\x1b[2m';
@@ -8743,6 +8910,10 @@ module.exports = {
         useAgentApply(next) { const prev = agentApply; agentApply = next; return () => { agentApply = prev; }; },
         agentsLocalDecision,
         adminAccountView,
+        adminImportAccount,
+        adminImportAccountsBulk,
+        accountInboxDir,
+        accountInboxPass,
         adminPoolSummary,
         accountLimitsView,
         noteAccountRequest,
